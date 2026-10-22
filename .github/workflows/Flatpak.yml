@@ -68,4 +68,22 @@ jobs:
 
       - name: Create Flatpak bundle
         run: |
-          REF=$(ostree refs
+          flatpak build-bundle \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            repo loops.flatpak org.joinloops.Loops master
+          ls -lh loops.flatpak
+          test "$(stat -c%s loops.flatpak)" -gt 10240
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: loops-flatpak
+          path: loops.flatpak
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: loops.flatpak
