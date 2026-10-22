@@ -1,4 +1,5 @@
 import { StackText, XStack } from '@/components/ui/Stack';
+import { OAuthService } from '@/services/oauth';
 import { useAuthStore } from '@/utils/authStore';
 import { openBrowser, registerPreflightCheck } from '@/utils/requests';
 import * as AppleAuthentication from 'expo-apple-authentication';
@@ -50,6 +51,7 @@ export default function SignInScreen() {
 
     const [currentStep, setCurrentStep] = useState<FlowStep>('initial');
     const [isLoading, setIsLoading] = useState(false);
+    const [loginError, setLoginError] = useState<string | null>(null);
 
     const [selectedServer, setSelectedServer] = useState(POPULAR_SERVERS[0].value);
     const [customServerUrl, setCustomServerUrl] = useState('');
@@ -112,6 +114,7 @@ export default function SignInScreen() {
             .toLowerCase()
             .replace(/^https?:\/\//, '')
             .replace(/\/$/, '');
+        setLoginError(null);
         setIsLoading(true);
 
         try {
@@ -119,14 +122,14 @@ export default function SignInScreen() {
             if (success) {
                 router.replace('/(tabs)');
             } else {
-                Alert.alert(
-                    'Login Failed',
-                    'Unable to complete login. Please check the server URL and try again.',
+                setLoginError(
+                    OAuthService.getLastLoginError() ||
+                        'Não foi possível concluir o login. Tente autorizar novamente.',
                 );
             }
         } catch (error) {
             console.error('Login error:', error);
-            Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+            setLoginError(error instanceof Error ? error.message : 'Falha inesperada ao entrar.');
         } finally {
             setIsLoading(false);
         }
@@ -302,6 +305,11 @@ export default function SignInScreen() {
                         <Text style={tw`text-black text-base font-bold`}>Continue</Text>
                     )}
                 </Pressable>
+                {loginError && (
+                    <Text accessibilityRole="alert" style={tw`mt-4 text-red-300 text-sm`}>
+                        {loginError}
+                    </Text>
+                )}
             </Animated.View>
         </View>
     );

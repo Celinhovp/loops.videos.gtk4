@@ -2,7 +2,7 @@ import { triggerAuthFailure } from '@/utils/authEvents';
 import { Storage } from '@/utils/cache';
 import { File as FsFile, UploadType } from 'expo-file-system';
 import * as WebBrowser from 'expo-web-browser';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 
 import type {
     DmConversation,
@@ -95,19 +95,6 @@ function guardAuthResponse(resp: Response): void {
 export function resetAuthFailureFlag() {
     _authFailureTriggered = false;
 }
-
-const DEFAULT_APP_PREFERENCES = {
-    account: { username: 'user', profile_id: null },
-    settings: {
-        autoplay_videos: true,
-        loop_videos: true,
-        default_feed: 'local',
-        hide_for_you_feed: false,
-        mute_on_open: false,
-        auto_expand_cw: false,
-        appearance: 'light',
-    },
-};
 
 export async function openBrowser(url, options) {
     await WebBrowser.openBrowserAsync(url, options);
@@ -446,6 +433,31 @@ async function uploadFileMultipart(
         throw new Error('uploadFileMultipart: no file ({ uri }) present in params');
     }
 
+    if (Platform.OS === 'web') {
+        const source = await fetch(filePart.uri);
+        if (!source.ok) throw new Error('Could not read the selected video file');
+        const blob = await source.blob();
+        const form = new FormData();
+        for (const [key, value] of Object.entries(parameters)) form.append(key, value);
+        const fallbackName = blob.type === 'video/quicktime' ? 'loops-video.mov' : 'loops-video.mp4';
+        form.append(fileFieldName ?? 'file', blob, filePart.name || fallbackName);
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: form,
+            signal: extras?.signal,
+        });
+        guardAuthResponse(response);
+        const responseBody = await response.text();
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((value, key) => (responseHeaders[key] = value));
+        return new UploadResponse(url, response.status, responseBody, responseHeaders);
+    }
+
     const file = new FsFile(filePart.uri);
 
     if (!file.exists) {
@@ -639,16 +651,16 @@ export async function getPreferences(): Promise<any> {
         guardAuthResponse(resp);
 
         if (!resp.ok) {
-            console.log('App preferences endpoint not available, using defaults');
-            return DEFAULT_APP_PREFERENCES;
+            console.log('App preferences endpoint unavailable; keeping local preferences');
+            return null;
         }
 
         const data = await resp.json();
-        return data.data;
+        return data?.data ?? null;
     } catch (error) {
         if (error?.message === 'auth_revoked') throw error;
-        console.log('Error fetching config, using defaults:', error);
-        return DEFAULT_APP_PREFERENCES;
+        console.log('Could not fetch server preferences; keeping local preferences:', error);
+        return null;
     }
 }
 

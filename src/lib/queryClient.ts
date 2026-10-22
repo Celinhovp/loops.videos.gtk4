@@ -8,18 +8,26 @@ import { useConfigStore } from '../stores/configStore';
 
 const ONE_DAY = 1000 * 60 * 60 * 24;
 
-const mmkv = createMMKV({ id: 'loops-query-cache' });
+import { Storage } from '../utils/cache';
 
 const mmkvStorage = {
     getItem: (key: string): string | null => {
-        const v = mmkv.getString(key);
-        return v === undefined ? null : v;
+        try {
+            const v = Storage.getString(key);
+            return v === undefined ? null : v;
+        } catch {
+            return null;
+        }
     },
     setItem: (key: string, value: string): void => {
-        mmkv.set(key, value);
+        try {
+            Storage.set(key, value);
+        } catch {}
     },
     removeItem: (key: string): void => {
-        mmkv.remove(key);
+        try {
+            Storage.remove(key);
+        } catch {}
     },
 };
 
@@ -41,7 +49,10 @@ persistQueryClient({
     persister,
     maxAge: ONE_DAY * 7,
     dehydrateOptions: {
-        shouldDehydrateQuery: (q) => q.queryKey[0] === 'server-config',
+        // Keep public server config and account-scoped feed pages on disk so
+        // reopening the desktop app can paint cached videos immediately.
+        shouldDehydrateQuery: (q) =>
+            q.queryKey[0] === 'server-config' || q.queryKey[0] === 'videos',
     },
 });
 

@@ -5,6 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { useAuthStore } from '@/utils/authStore';
 import React, { useEffect, useRef, useState } from 'react';
 import {
     Dimensions,
@@ -27,6 +28,7 @@ export default function VideoPlayer({
     onBookmark,
     onOther,
     bottomInset,
+    itemHeight,
     commentsOpen,
     screenFocused,
     videoPlaybackRates,
@@ -40,6 +42,12 @@ export default function VideoPlayer({
     const [isBookmarked, setIsBookmarked] = useState(item.has_bookmarked);
     const [showControls, setShowControls] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
+    const isGtkDesktop =
+        Platform.OS === 'web' &&
+        typeof window !== 'undefined' &&
+        /Loops\/\d+.*GTK4/.test(window.navigator.userAgent);
+    const isMuted = useAuthStore((state) => state.desktopVideoMuted);
+    const setDesktopVideoMuted = useAuthStore((state) => state.setDesktopVideoMuted);
     const manualControlRef = useRef(false);
     const isMountedRef = useRef(true);
     const wasActiveRef = useRef(false);
@@ -52,7 +60,19 @@ export default function VideoPlayer({
     const player = useVideoPlayer(item.media.src_url, (player) => {
         player.loop = true;
         player.playbackRate = playbackRate;
+        // WebKitGTK blocks autoplay with audio. Start desktop feed videos muted
+        // so autoplay works; native mobile behavior keeps the user's setting.
+        if (isGtkDesktop) player.muted = isMuted;
     });
+
+    useEffect(() => {
+        if (!player || !isGtkDesktop) return;
+        try {
+            player.muted = isMuted;
+        } catch (error) {
+            console.log('Mute state error:', error);
+        }
+    }, [isMuted, isGtkDesktop, player]);
 
     useEffect(() => {
         isMountedRef.current = true;
@@ -104,6 +124,9 @@ export default function VideoPlayer({
         otherOpen,
         screenFocused,
         player,
+        isGtkDesktop,
+        isMuted,
+        playbackRate,
         item.is_sensitive,
         playSensitive,
     ]);
@@ -141,6 +164,13 @@ export default function VideoPlayer({
         } catch (error) {
             console.log('Toggle play/pause error:', error);
         }
+    };
+
+    const toggleMute = () => {
+        if (!player) return;
+        const nextMuted = !isMuted;
+        player.muted = nextMuted;
+        setDesktopVideoMuted(nextMuted);
     };
 
     const handleScreenPress = () => {
@@ -185,7 +215,7 @@ export default function VideoPlayer({
 
     if (item.is_sensitive && !playSensitive) {
         return (
-            <View style={styles.videoContainer}>
+            <View style={[styles.videoContainer, { height: itemHeight || SCREEN_HEIGHT }]}>
                 <View
                     style={styles.sensitiveOverlay}
                     accessible={true}
@@ -218,7 +248,7 @@ export default function VideoPlayer({
     }
 
     return (
-        <View style={styles.videoContainer}>
+        <View style={[styles.videoContainer, { height: itemHeight || SCREEN_HEIGHT }]}>
             <View style={styles.videoWrapper}>
                 <VideoView
                     style={styles.video}
@@ -422,6 +452,26 @@ export default function VideoPlayer({
                     </View>
                 )}
             </View>
+
+            {isGtkDesktop && (
+                <Pressable
+                    onPress={(event) => {
+                        event.stopPropagation();
+                        toggleMute();
+                    }}
+                    style={styles.muteButton}
+                    hitSlop={12}
+                    accessible
+                    accessibilityLabel={isMuted ? 'Unmute video' : 'Mute video'}
+                    accessibilityRole="button">
+                    <Ionicons
+                        name={isMuted ? 'volume-mute' : 'volume-high'}
+                        size={24}
+                        color="white"
+                        pointerEvents="none"
+                    />
+                </Pressable>
+            )}
         </View>
     );
 }
@@ -458,6 +508,19 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         zIndex: 11,
         elevation: 11,
+    },
+    muteButton: {
+        position: 'absolute',
+        top: 18,
+        left: 18,
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 30,
+        elevation: 30,
     },
     sensitiveOverlay: {
         ...StyleSheet.absoluteFillObject,

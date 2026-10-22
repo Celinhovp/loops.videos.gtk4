@@ -1,4 +1,5 @@
 import { useTheme } from '@/contexts/ThemeContext';
+import { useAuthStore } from '@/utils/authStore';
 import { useQueryClient } from '@tanstack/react-query';
 import { Stack, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -7,6 +8,7 @@ import tw from 'twrnc';
 
 export default function AppearanceScreen() {
     const { colorScheme, setColorScheme } = useTheme();
+    const updatePreference = useAuthStore((state) => state.updatePreference);
     const [systemTheme, setSystemTheme] = useState(colorScheme === 'device');
     const [lastSelectedTheme, setLastSelectedTheme] = useState<'light' | 'dark'>('light');
 
@@ -23,6 +25,7 @@ export default function AppearanceScreen() {
     const handleThemeSelect = (theme: 'light' | 'dark') => {
         setLastSelectedTheme(theme);
         setColorScheme(theme);
+        void updatePreference('appearance', theme);
     };
 
     const handleSystemThemeToggle = (value: boolean) => {

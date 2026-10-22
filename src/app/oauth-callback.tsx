@@ -1,7 +1,8 @@
 import { useAuthStore } from '@/utils/authStore';
+import { OAuthService } from '@/services/oauth';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, StyleSheet, Text, View } from 'react-native';
 
 export default function OAuthCallbackScreen() {
     const params = useLocalSearchParams();
@@ -21,6 +22,14 @@ export default function OAuthCallbackScreen() {
             Alert.alert('Sign In Error', errorMessage as string);
             router.replace('/sign-in');
             return;
+        }
+
+        if (Platform.OS === 'web' && typeof window !== 'undefined' && params?.code) {
+            const success = await OAuthService.completeWebLogin(window.location.href);
+            if (!success) {
+                router.replace('/sign-in');
+                return;
+            }
         }
 
         syncAuthState();

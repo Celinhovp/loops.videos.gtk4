@@ -14,7 +14,8 @@ export interface OAuthApp {
     client_secret: string;
     instance: string;
     client_name: string;
-    redirect_uris: array;
+    redirect_uris?: string | string[];
+    redirect_uri?: string;
 }
 
 export interface OAuthToken {
@@ -43,9 +44,41 @@ export interface LoopsUser {
 export class OAuthService {
     private static readonly APP_NAME = `Loops for ${Platform.OS === 'android' ? 'Android' : 'iOS'}`;
     private static readonly DEFAULT_SCOPES = 'user:read user:write video:create video:read';
+    private static lastLoginError: string | null = null;
+
+    static getLastLoginError(): string | null {
+        return this.lastLoginError;
+    }
 
     private static getRedirectUri(): string {
         return Linking.createURL('oauth-callback');
+    }
+
+    private static isGtkDesktopWebView(): boolean {
+        return (
+            Platform.OS === 'web' &&
+            typeof window !== 'undefined' &&
+            /Loops\/\d+.*GTK4/.test(window.navigator.userAgent)
+        );
+    }
+
+    private static async waitForDesktopOAuthCallback(): Promise<string | null> {
+        const deadline = Date.now() + 10 * 60 * 1000;
+        const statusUrl = `${window.location.origin}/oauth-callback-status`;
+
+        while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            try {
+                const response = await fetch(statusUrl, { cache: 'no-store' });
+                if (!response.ok) continue;
+                const result = await response.json();
+                if (typeof result.url === 'string' && result.url) return result.url;
+            } catch (error) {
+                console.warn('Waiting for desktop OAuth callback:', error);
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -134,6 +167,7 @@ export class OAuthService {
      * Initiates the OAuth login flow
      */
     static async login(server: string, enabledScopes?: string): Promise<boolean> {
+        this.lastLoginError = null;
         try {
             const scopes = enabledScopes || this.DEFAULT_SCOPES;
 
@@ -157,7 +191,7 @@ export class OAuthService {
                 return false;
             }
 
-            this.storeAppCredentials(app);
+            this.storeAppCredentials(app, REDIRECT_URI);
 
             const authUrl =
                 `${url}/oauth/authorize` +
@@ -167,6 +201,23 @@ export class OAuthService {
                 `&response_type=code`;
 
             console.log('Opening auth URL:', authUrl);
+
+            // Desktop/web builds can block a popup opened after the preflight and
+            // client registration requests. Navigate in the current WebView instead;
+            // the instance redirects back to /oauth-callback after authorization.
+            if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                window.location.assign(authUrl);
+                if (this.isGtkDesktopWebView()) {
+                    const callbackUrl = await this.waitForDesktopOAuthCallback();
+                    if (!callbackUrl) {
+                        this.lastLoginError =
+                            'O navegador terminou a autorização, mas o app não recebeu o retorno local. Verifique se a instância do Loops continuou aberta.';
+                        return false;
+                    }
+                    return await this.handleCallback(callbackUrl);
+                }
+                return new Promise<boolean>(() => {});
+            }
 
             const authResult = await WebBrowser.openAuthSessionAsync(authUrl, REDIRECT_URI, {
                 showInRecents: true,
@@ -185,7 +236,8 @@ export class OAuthService {
                 return false;
             }
         } catch (error) {
-            console.error('OAuth login error:', error);
+                this.lastLoginError = error instanceof Error ? error.message : 'Falha ao iniciar a autorização.';
+                console.error('OAuth login error:', this.lastLoginError);
             Alert.alert('Error', 'An error occurred during login. Please try again.');
             return false;
         }
@@ -203,22 +255,26 @@ export class OAuthService {
             const formBody = {
                 client_name: this.APP_NAME,
                 redirect_uris: [redirectUri],
-                scopes: scopes,
+                scopes,
                 website: 'https://joinloops.org',
             };
 
-            console.log('Registering app with:', formBody);
-
+            console.log('Registering OAuth app with the Loops instance.');
+            // Use the browser's multipart form request. Besides matching the
+            // established Loops client flow, this avoids Cloudflare blocking
+            // requests forwarded by a non-browser Flatpak helper.
             const response = await postForm(`${instanceUrl}/api/v1/apps`, formBody);
             const app = await response.json();
-
-            const server = instanceUrl.replace('https://', '').replace('http://', '');
+            const instance = instanceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
 
             return {
                 ...app,
-                instance: server,
+                instance,
             };
         } catch (error) {
+            this.lastLoginError = error instanceof Error
+                ? error.message
+                : 'Não foi possível cadastrar o app na instância Loops.';
             console.error('App registration error:', error);
             return null;
         }
@@ -227,20 +283,27 @@ export class OAuthService {
     /**
      * Stores app credentials securely
      */
-    private static storeAppCredentials(app: OAuthApp): void {
+    private static storeAppCredentials(app: OAuthApp, fallbackRedirectUri: string): void {
         Storage.set('app.client_id', app.client_id);
         Storage.set('app.client_secret', app.client_secret);
         Storage.set('app.instance', app.instance);
         Storage.set('app.name', app.client_name);
-        Storage.set('app.redirect_uri', app.redirect_uris[0]);
+        const redirectUri = Array.isArray(app.redirect_uris)
+            ? app.redirect_uris[0]
+            : app.redirect_uris || app.redirect_uri || fallbackRedirectUri;
+        Storage.set('app.redirect_uri', redirectUri);
     }
 
     /**
      * Handles the OAuth callback after user authorization
      */
+    static async completeWebLogin(url: string): Promise<boolean> {
+        return this.handleCallback(url);
+    }
+
     private static async handleCallback(url: string): Promise<boolean> {
         try {
-            console.log('Handling callback URL:', url);
+            console.log('Handling OAuth callback.');
 
             const { queryParams } = Linking.parse(url);
 
@@ -259,11 +322,11 @@ export class OAuthService {
             const clientSecret = Storage.getString('app.client_secret');
 
             if (!instance || !clientId || !clientSecret) {
-                throw new Error('App credentials missing. Please try logging in again.');
+                throw new Error('O retorno chegou, mas as credenciais temporárias do app não foram encontradas. Reinicie a autorização.');
             }
 
             const api = `https://${instance}`;
-            const REDIRECT_URI = this.getRedirectUri();
+            const REDIRECT_URI = Storage.getString('app.redirect_uri') || this.getRedirectUri();
 
             const token = await this.exchangeCodeForToken(
                 api,
@@ -274,6 +337,7 @@ export class OAuthService {
             );
 
             if (!token) {
+                this.lastLoginError ||= 'O servidor recusou a troca do código por um token. Veja a resposta HTTP exibida abaixo.';
                 Alert.alert('Error', 'Failed to obtain access token.');
                 return false;
             }
@@ -282,6 +346,7 @@ export class OAuthService {
 
             const user = await this.verifyCredentials(api, token.access_token);
             if (!user) {
+                this.lastLoginError = 'O token foi recebido, mas o app não conseguiu confirmar o perfil da conta.';
                 Alert.alert('Error', 'Failed to verify user credentials.');
                 return false;
             }
@@ -299,7 +364,8 @@ export class OAuthService {
 
             return true;
         } catch (error) {
-            console.error('OAuth callback error:', error);
+            this.lastLoginError = error instanceof Error ? error.message : 'Falha ao concluir o retorno OAuth.';
+            console.error('OAuth callback error:', this.lastLoginError);
             Alert.alert('Error', 'Failed to complete login. Please try again.');
             return false;
         }
@@ -322,17 +388,50 @@ export class OAuthService {
                 redirect_uri: redirectUri,
                 grant_type: 'authorization_code',
                 code: code,
-                scope: this.DEFAULT_SCOPES,
             };
 
             console.log('Exchanging code for token...');
 
-            const response = await postForm(`${apiUrl}/oauth/token`, tokenRequestBody);
-            const token = await response.json();
+            const gtkWebView = this.isGtkDesktopWebView();
+            const instance = apiUrl.replace(/^https?:\/\//, '');
+            const response = gtkWebView
+                ? await fetch(`${window.location.origin}/oauth-token`, {
+                      method: 'POST',
+                      headers: {
+                          Accept: 'application/json',
+                          'Content-Type': 'application/json',
+                      },
+                      body: JSON.stringify({ ...tokenRequestBody, instance }),
+                  })
+                : await fetch(`${apiUrl}/oauth/token`, {
+                      method: 'POST',
+                      headers: {
+                          Accept: 'application/json',
+                          'Content-Type': 'application/json',
+                      },
+                      body: JSON.stringify(tokenRequestBody),
+                  });
 
+            if (!response.ok) {
+                const body = await response.text();
+                let detail = '';
+                try {
+                    const errorData = JSON.parse(body);
+                    detail = errorData.error_description || errorData.error || errorData.message || errorData.detail || errorData.title || '';
+                } catch {}
+                if (!detail) {
+                    detail = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+                }
+                this.lastLoginError = `A troca do código falhou (HTTP ${response.status})${detail ? `: ${detail}` : '.'}`;
+                throw new Error(this.lastLoginError);
+            }
+
+            const token = await response.json();
+            if (!token?.access_token) throw new Error('Token response did not contain an access token.');
             return token;
         } catch (error) {
-            console.error('Token exchange error:', error);
+            this.lastLoginError ||= error instanceof Error ? error.message : 'Falha ao trocar o código por token.';
+            console.error('Token exchange error:', this.lastLoginError);
             return null;
         }
     }
@@ -358,7 +457,10 @@ export class OAuthService {
             const user = await response.json();
             return user.data;
         } catch (error) {
-            console.error('Credential verification error:', error);
+            this.lastLoginError = error instanceof Error
+                ? `O token foi recebido, mas a validação da conta falhou: ${error.message}`
+                : 'O token foi recebido, mas a validação da conta falhou.';
+            console.error('Credential verification error:', this.lastLoginError);
             return null;
         }
     }

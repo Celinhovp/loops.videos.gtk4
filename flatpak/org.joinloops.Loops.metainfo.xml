@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.joinloops.Loops</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Loops</name>
+  <summary>Federated short-form video application</summary>
+  <description>
+    <p>
+      Loops is a federated short video platform powered by ActivityPub.
+      Discover, watch, like, and share short-form looping videos across the Fediverse.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Responsive and resizable native GTK4 / Libadwaita interface.</li>
+      <li>For You and Following video feeds with native GStreamer playback.</li>
+      <li>Fediverse / ActivityPub integration powered by Pixelfed and Loops instances.</li>
+      <li>Video likes, bookmarks, comments, and direct text messages.</li>
+      <li>Explore tags, notifications, and view your own videos.</li>
+      <li>Choose and preview a video before publishing it.</li>
+      <li>Dark, light, and system appearance preferences.</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">org.joinloops.Loops.desktop</launchable>
+  <url type="homepage">https://joinloops.org</url>
+  <url type="bugtracker">https://github.com/joinloops/loops-expo/issues</url>
+  <url type="vcs-browser">https://github.com/joinloops/loops-expo</url>
+  <developer_name>Loops Community</developer_name>
+  <provides>
+    <binary>loops</binary>
+  </provides>
+  <releases>
+    <release version="1.0.2" date="2026-10-09">
+      <description>
+        <p>GTK4 and Flatpak release with responsive and resizable desktop interface.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-info">intense</content_attribute>
+  </content_rating>
+</component>

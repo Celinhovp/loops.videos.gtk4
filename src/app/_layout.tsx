@@ -5,20 +5,21 @@ import * as Notifications from 'expo-notifications';
 import { router, SplashScreen, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import { Platform, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 
-Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-        shouldPlaySound: false,
-        shouldSetBadge: false,
-        shouldShowBanner: true,
-        shouldShowList: true,
-    }),
-});
-
-SplashScreen.preventAutoHideAsync();
+if (Platform.OS !== 'web') {
+    Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+            shouldShowBanner: true,
+            shouldShowList: true,
+        }),
+    });
+    SplashScreen.preventAutoHideAsync().catch(() => {});
+}
 
 const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: 2 } },
@@ -26,6 +27,7 @@ const queryClient = new QueryClient({
 
 function useNotificationObserver() {
     useEffect(() => {
+        if (Platform.OS === 'web') return;
         function redirect(notification: Notifications.Notification) {
             const url = notification.request.content.data?.url;
             if (typeof url === 'string') {
@@ -66,6 +68,9 @@ function AppContent() {
         <React.Fragment>
             <StatusBar style={getStatusBarStyle()} />
             <Stack>
+                {/* OAuth returns here before the app has an authenticated session. */}
+                <Stack.Screen name="oauth-callback" options={{ headerShown: false }} />
+
                 <Stack.Protected guard={isLoggedIn}>
                     <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                     <Stack.Screen name="private" options={{ headerShown: false }} />
@@ -90,12 +95,10 @@ export default function RootLayout() {
     const { _hasHydrated } = useAuthStore();
 
     useEffect(() => {
-        if (_hasHydrated) {
-            SplashScreen.hideAsync();
-        }
+        SplashScreen.hideAsync().catch(() => {});
     }, [_hasHydrated]);
 
-    if (!_hasHydrated) {
+    if (!_hasHydrated && Platform.OS !== 'web') {
         return null;
     }
 
@@ -111,3 +114,48 @@ export default function RootLayout() {
         </GestureHandlerRootView>
     );
 }
+
+export function ErrorBoundary({ error, retry }) {
+    return (
+        <View style={styles.errorScreen}>
+            <Text style={styles.errorTitle}>Loops could not open</Text>
+            <Text style={styles.errorMessage}>{error?.message || 'An unexpected error occurred.'}</Text>
+            <TouchableOpacity onPress={retry} style={styles.retryButton}>
+                <Text style={styles.retryText}>Try again</Text>
+            </TouchableOpacity>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    errorScreen: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+        backgroundColor: '#000',
+    },
+    errorTitle: {
+        color: '#fff',
+        fontSize: 22,
+        fontWeight: '700',
+        marginBottom: 12,
+    },
+    errorMessage: {
+        color: '#bbb',
+        fontSize: 14,
+        textAlign: 'center',
+        marginBottom: 20,
+    },
+    retryButton: {
+        borderRadius: 20,
+        backgroundColor: '#d4c900',
+        paddingHorizontal: 22,
+        paddingVertical: 11,
+    },
+    retryText: {
+        color: '#000',
+        fontWeight: '700',
+    },
+});
+

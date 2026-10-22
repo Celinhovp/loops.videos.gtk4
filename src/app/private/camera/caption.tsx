@@ -204,7 +204,7 @@ export default function CaptionScreen() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
     const params = useLocalSearchParams();
-    const { videoPath, duration, selectedSound } = params;
+    const { videoPath, duration, selectedSound, fileName } = params;
     const [caption, setCaption] = useState('');
     const [altText, setAltText] = useState('');
     const [selectedLanguage, setSelectedLanguage] = useState(LANGUAGES[0]);
@@ -242,9 +242,11 @@ export default function CaptionScreen() {
     const altTextInputRef = useRef<TextInput>(null);
     const isFocused = useIsFocused();
 
-    const videoUri = (videoPath as string)?.startsWith('file://')
+    const videoUri = Platform.OS === 'web'
         ? (videoPath as string)
-        : `file://${videoPath}`;
+        : (videoPath as string)?.startsWith('file://')
+          ? (videoPath as string)
+          : `file://${videoPath}`;
     const player = useVideoPlayer(videoUri, () => { });
 
 
@@ -299,7 +301,9 @@ export default function CaptionScreen() {
             setOverlayMessage(`Preparing… ${pct}%`);
         });
 
-        const uploadUri = compressedUri.startsWith('file://')
+        const uploadUri = Platform.OS === 'web'
+            ? compressedUri
+            : compressedUri.startsWith('file://')
             ? compressedUri
             : `file://${compressedUri}`;
 
@@ -308,7 +312,8 @@ export default function CaptionScreen() {
         const params = {
             video: {
                 uri: uploadUri,
-                type: 'video/mp4',
+                type: Platform.OS === 'web' ? undefined : 'video/mp4',
+                name: typeof fileName === 'string' ? fileName : 'loops-video.mp4',
             },
             description: caption ?? null,
             alt_text: altText ?? null,

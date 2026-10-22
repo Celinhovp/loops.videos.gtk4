@@ -49,6 +49,8 @@ export default function LoopsFeed({ navigation }) {
     const [feedHeight, setFeedHeight] = useState(0);
     const hideForYouFeed = useAuthStore((state) => state.hideForYouFeed);
     const defaultFeed = useAuthStore((state) => state.defaultFeed);
+    const accountId = useAuthStore((state) => state.user?.id);
+    const accountServer = useAuthStore((state) => state.server);
     const [tabOverride, setTabOverride] = useState(null);
     const activeTab = tabOverride ?? defaultFeed;
     const [currentIndex, setCurrentIndex] = useState(0);
@@ -122,12 +124,23 @@ export default function LoopsFeed({ navigation }) {
         [activeTab],
     );
 
-    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, refetch, isFetching } =
+    const {
+        data,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+        isLoading,
+        isError,
+        refetch,
+        isFetching,
+    } =
         useInfiniteQuery({
-            queryKey: ['videos', activeTab],
+            queryKey: ['videos', accountServer, accountId, activeTab],
             queryFn: ({ pageParam }) => fetchVideos({ pageParam, tab: activeTab }),
             getNextPageParam: (lastPage) => lastPage.meta?.next_cursor,
             initialPageParam: null,
+            staleTime: 60_000,
+            retry: 1,
         });
 
     const videoLikeMutation = useMutation({
@@ -162,24 +175,26 @@ export default function LoopsFeed({ navigation }) {
 
     const videos = data?.pages?.flatMap((page) => page.data) || [];
     const downloader = useVideoDownload();
-    const onViewableItemsChanged = useCallback(
-        ({ viewableItems }) => {
-            if (viewableItems.length > 0) {
-                const newIndex = viewableItems[0].index || 0;
-                const newVideo = videos[newIndex];
+    const viewabilityStateRef = useRef({ videos, recordVideoImpression });
+    viewabilityStateRef.current = { videos, recordVideoImpression };
+    const onViewableItemsChanged = useCallback(({ viewableItems }) => {
+        if (viewableItems.length > 0) {
+            const firstVisibleItem = viewableItems[0];
+            const newIndex = firstVisibleItem.index ?? 0;
+            const { videos: currentVideos, recordVideoImpression: recordImpression } =
+                viewabilityStateRef.current;
+            const newVideo = currentVideos[newIndex];
 
-                if (currentVideoRef.current && watchStartTimeRef.current) {
-                    const watchDuration = (Date.now() - watchStartTimeRef.current) / 1000;
-                    recordVideoImpression(currentVideoRef.current, watchDuration);
-                }
-
-                setCurrentIndex(newIndex);
-                currentVideoRef.current = newVideo;
-                watchStartTimeRef.current = Date.now();
+            if (currentVideoRef.current && watchStartTimeRef.current) {
+                const watchDuration = (Date.now() - watchStartTimeRef.current) / 1000;
+                recordImpression(currentVideoRef.current, watchDuration);
             }
-        },
-        [videos, recordVideoImpression],
-    );
+
+            setCurrentIndex(newIndex);
+            currentVideoRef.current = newVideo;
+            watchStartTimeRef.current = Date.now();
+        }
+    }, []);
 
     useEffect(() => {
         return () => {
@@ -387,6 +402,7 @@ export default function LoopsFeed({ navigation }) {
                 </View>
             ) : (
                 <FlatList
+                    key={activeTab}
                     ref={flatListRef}
                     data={videos}
                     renderItem={renderItem}
@@ -419,7 +435,14 @@ export default function LoopsFeed({ navigation }) {
                         />
                     }
                     ListEmptyComponent={
-                        showEmptyState ? (
+                        isError ? (
+                            <View style={styles.loadingContainer}>
+                                <Text style={styles.feedErrorText}>Could not load this feed.</Text>
+                                <TouchableOpacity onPress={onRefresh} style={styles.retryButton}>
+                                    <Text style={styles.retryButtonText}>Try again</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : showEmptyState ? (
                             <FeedEmptyState tab={activeTab} onRefresh={onRefresh} />
                         ) : null
                     }
@@ -510,6 +533,21 @@ const styles = StyleSheet.create({
     footer: {
         justifyContent: 'center',
         alignItems: 'center',
+    },
+    feedErrorText: {
+        color: '#fff',
+        fontSize: 16,
+        marginBottom: 16,
+    },
+    retryButton: {
+        backgroundColor: '#d4c900',
+        borderRadius: 20,
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+    },
+    retryButtonText: {
+        color: '#000',
+        fontWeight: '700',
     },
     endOfFeedContainer: {
         justifyContent: 'center',

@@ -1,12 +1,76 @@
 import { LoopsUser, OAuthService } from '@/services/oauth';
+import { queryClient } from '@/lib/queryClient';
 import { useNotificationStore } from '@/utils//notificationStore';
 import { setAuthFailureHandler } from '@/utils/authEvents';
 import { getPreferences, resetAuthFailureFlag, updatePreferences } from '@/utils/requests';
 import * as SecureStore from 'expo-secure-store';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { Storage } from './cache';
+
+const isWeb = Platform.OS === 'web' || typeof window !== 'undefined';
+const initialDesktopVideoMuted = (() => {
+    try {
+        return Storage.getString('desktopVideoMuted') !== 'false';
+    } catch {
+        return true;
+    }
+})();
+
+const initialWebAuth = (() => {
+    if (typeof window === 'undefined') return { isLoggedIn: false, user: null, server: null };
+    try {
+        const token = window.localStorage.getItem('user.token') || window.localStorage.getItem('app.token');
+        const profile = window.localStorage.getItem('user.profile');
+        return {
+            isLoggedIn: Boolean(token && profile),
+            user: profile ? JSON.parse(profile) : null,
+            server: window.localStorage.getItem('user.server') || window.localStorage.getItem('app.instance'),
+        };
+    } catch {
+        return { isLoggedIn: false, user: null, server: null };
+    }
+})();
+
+const universalStorage = {
+    getItem: (key: string): string | null | Promise<string | null> => {
+        if (isWeb) {
+            try {
+                return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+            } catch {
+                return null;
+            }
+        }
+        return SecureStore.getItemAsync(key).catch(() => null);
+    },
+    setItem: async (key: string, value: string): Promise<void> => {
+        if (isWeb) {
+            try {
+                if (typeof localStorage !== 'undefined') {
+                    localStorage.setItem(key, value);
+                }
+            } catch {}
+            return;
+        }
+        try {
+            await SecureStore.setItemAsync(key, value);
+        } catch {}
+    },
+    removeItem: async (key: string): Promise<void> => {
+        if (isWeb) {
+            try {
+                if (typeof localStorage !== 'undefined') {
+                    localStorage.removeItem(key);
+                }
+            } catch {}
+            return;
+        }
+        try {
+            await SecureStore.deleteItemAsync(key);
+        } catch {}
+    },
+};
 
 type UserState = {
     isLoggedIn: boolean;
@@ -20,6 +84,8 @@ type UserState = {
     autoplayVideos: boolean;
     loopVideos: boolean;
     muteOnOpen: boolean;
+    desktopVideoMuted: boolean;
+    setDesktopVideoMuted: (value: boolean) => void;
     autoExpandCw: boolean;
     loginWithApple: (server: string, credential: any) => Promise<boolean>;
     appearance: 'light' | 'dark' | 'system';
@@ -42,17 +108,21 @@ type UserState = {
 export const useAuthStore = create(
     persist<UserState>(
         (set, get) => ({
-            isLoggedIn: false,
+            // Read the desktop WebKit credentials before the router mounts. The
+            // persist middleware finishes rehydrating asynchronously, which can
+            // otherwise expose the sign-in guard for one render on every launch.
+            isLoggedIn: initialWebAuth.isLoggedIn,
             shouldCreateAccount: false,
             hasCompletedOnboarding: false,
             _hasHydrated: false,
-            user: null,
-            server: null,
+            user: initialWebAuth.user,
+            server: initialWebAuth.server,
             hideForYouFeed: false,
             defaultFeed: 'local',
             autoplayVideos: true,
             loopVideos: true,
             muteOnOpen: false,
+            desktopVideoMuted: initialDesktopVideoMuted,
             autoExpandCw: false,
             appearance: 'light',
 
@@ -225,6 +295,12 @@ export const useAuthStore = create(
                 }
             },
 
+            setDesktopVideoMuted: (value: boolean) => {
+                // Keep this device preference independent of the server account.
+                Storage.set('desktopVideoMuted', value);
+                set((state) => ({ ...state, desktopVideoMuted: value }));
+            },
+
             setHideForYouFeed: async (value: boolean) => {
                 await get().updatePreference('hideForYouFeed', value);
             },
@@ -271,6 +347,7 @@ export const useAuthStore = create(
                 }
 
                 useNotificationStore.getState().resetBadgeCount();
+                queryClient.removeQueries({ queryKey: ['videos'] });
 
                 OAuthService.logout();
 
@@ -290,7 +367,7 @@ export const useAuthStore = create(
                     appearance: 'light',
                 });
 
-                SecureStore.deleteItemAsync('auth-store.v0.5').catch((error) => {
+                universalStorage.removeItem('auth-store.v0.5').catch((error) => {
                     console.error('Failed to clear persisted auth store:', error);
                 });
             },
@@ -333,13 +410,12 @@ export const useAuthStore = create(
         }),
         {
             name: 'auth-store.v0.5',
-            storage: createJSONStorage(() => ({
-                setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
-                getItem: (key: string) => SecureStore.getItemAsync(key),
-                removeItem: (key: string) => SecureStore.deleteItemAsync(key),
-            })),
+            storage: createJSONStorage(() => universalStorage),
             onRehydrateStorage: () => {
-                return (state) => {
+                return (state, error) => {
+                    if (error) {
+                        console.error('Failed to rehydrate auth store:', error);
+                    }
                     state?.setHasHydrated(true);
                 };
             },
@@ -352,6 +428,7 @@ export const useAuthStore = create(
                 autoplayVideos: state.autoplayVideos,
                 loopVideos: state.loopVideos,
                 muteOnOpen: state.muteOnOpen,
+                desktopVideoMuted: state.desktopVideoMuted,
                 autoExpandCw: state.autoExpandCw,
                 appearance: state.appearance,
             }),

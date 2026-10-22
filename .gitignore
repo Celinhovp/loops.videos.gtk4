@@ -41,3 +41,12 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Local workspace state and generated GTK4/Flatpak outputs
+.home/
+.npm/
+build_flatpak/
+repo/
+loops.flatpak
+__pycache__/
+*.py[cod]

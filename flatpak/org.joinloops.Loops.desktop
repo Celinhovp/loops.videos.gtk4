@@ -1,0 +1,18 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Loops
+GenericName=Short Video App
+Comment=Short video federation app for the Fediverse
+Exec=loops %U
+Icon=org.joinloops.Loops
+Terminal=false
+Categories=AudioVideo;Video;Network;Feed;
+Keywords=loops;video;fediverse;pixelfed;social;short;reels;tiktok;
+StartupWMClass=org.joinloops.Loops
+MimeType=x-scheme-handler/loops;
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=loops

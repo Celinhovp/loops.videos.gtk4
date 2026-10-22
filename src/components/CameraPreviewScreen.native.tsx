@@ -1,0 +1,255 @@
+import { XStack } from '@/components/ui/Stack';
+import { Feather, Ionicons } from '@expo/vector-icons';
+import { useEventListener } from 'expo';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Asset, requestPermissionsAsync } from 'expo-media-library';
+import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useState } from 'react';
+
+import {
+    Alert,
+    Dimensions,
+    Platform,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+
+const { width, height } = Dimensions.get('window');
+
+export default function PreviewScreen() {
+    const router = useRouter();
+    const params = useLocalSearchParams();
+    const { videoPath, duration, fileName } = params;
+    const [selectedSound, setSelectedSound] = useState('');
+    const [isPlaying, setIsPlaying] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const isFocused = useIsFocused();
+
+    const player = useVideoPlayer(videoPath as string, (player) => {
+        player.loop = true;
+        player.play();
+    });
+
+    useEventListener(player, 'statusChange', ({ status, error }) => {
+        console.log('Player status changed: ', status);
+        console.log('Player error changed: ', error);
+    });
+
+    const handleBack = () => {
+        router.back();
+    };
+
+    const handleRemoveSound = () => {
+        setSelectedSound('');
+        Alert.alert('Sound Removed', 'Audio track has been removed');
+    };
+
+    const handleSettings = () => {
+        Alert.alert('Settings', 'Sound settings coming soon');
+    };
+
+    const handleNext = () => {
+        player.pause();
+        router.push({
+            pathname: '/private/camera/caption',
+            params: { videoPath: videoPath, duration: duration, fileName },
+        });
+    };
+
+    const togglePlayPause = () => {
+        if (player.playing) {
+            player.pause();
+        } else {
+            player.play();
+        }
+        setIsPlaying(player.playing);
+    };
+
+    const handleDownload = async () => {
+        try {
+            const { status } = await requestPermissionsAsync(true);
+            if (status !== 'granted') {
+                Alert.alert(
+                    'Permission Required',
+                    'Please allow access to your camera roll to save videos.',
+                );
+                return;
+            }
+
+            setIsSaving(true);
+            const uri = (videoPath as string).startsWith('file://')
+                ? (videoPath as string)
+                : `file://${videoPath}`;
+
+            await Asset.create(uri);
+            Alert.alert('Saved!', 'Video saved to your camera roll.');
+        } catch (e) {
+            console.log(e);
+            Alert.alert('Error', 'Failed to save video.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <View style={styles.container}>
+            <Stack.Screen options={{ headerShown: false }} />
+
+            {isFocused && (
+                <VideoView
+                    style={styles.video}
+                    player={player}
+                    allowsPictureInPicture={false}
+                    nativeControls={false}
+                    surfaceType={Platform.OS === 'android' ? 'textureView' : 'surfaceView'}
+                />
+            )}
+
+            <LinearGradient
+                colors={['transparent', 'rgba(0,0,0,0.2)', 'rgba(0,0,0,0.5)']}
+                style={styles.gradientOverlay}
+                pointerEvents="none"
+            />
+
+            <View style={styles.topBar}>
+                <TouchableOpacity onPress={handleBack} style={styles.topButton}>
+                    <Ionicons name="chevron-back" size={28} color="#fff" />
+                </TouchableOpacity>
+
+                {selectedSound && (
+                    <View style={styles.soundChip}>
+                        <Ionicons name="musical-notes" size={16} color="#fff" />
+                        <Text style={styles.soundText} numberOfLines={1}>
+                            {selectedSound}
+                        </Text>
+                        <TouchableOpacity
+                            onPress={handleRemoveSound}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <Ionicons name="close" size={18} color="#fff" />
+                        </TouchableOpacity>
+                    </View>
+                )}
+
+                <TouchableOpacity onPress={handleSettings} style={styles.topButton}>
+                    <Ionicons name="settings-outline" size={24} color="#fff" />
+                </TouchableOpacity>
+            </View>
+
+            <View style={styles.rightControls} />
+
+            <View style={styles.bottomContainer}>
+                <XStack gap={'$3'}>
+                    <TouchableOpacity
+                        accessible={true}
+                        accessibilityLabel="Play and pause button"
+                        onPress={togglePlayPause}
+                        style={styles.controlButton}>
+                        <Feather name={isPlaying ? 'pause' : 'play'} size={24} color="#fff" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        accessible={true}
+                        accessibilityLabel="Download video button"
+                        onPress={handleDownload}
+                        style={styles.controlButton}
+                        disabled={isSaving}>
+                        <Feather name={isSaving ? 'loader' : 'download'} size={28} color="#fff" />
+                    </TouchableOpacity>
+                </XStack>
+
+                <TouchableOpacity
+                    onPress={handleNext}
+                    style={styles.nextButton}
+                    activeOpacity={0.7}>
+                    <Text style={styles.nextButtonText}>Next</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: '#000',
+    },
+    video: {
+        width: width,
+        height: height,
+        position: 'absolute',
+    },
+    topBar: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingTop: 60,
+        paddingHorizontal: 20,
+        zIndex: 10,
+    },
+    topButton: {
+        width: 26,
+        height: 44,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    soundChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(40, 40, 40, 0.9)',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 20,
+        gap: 8,
+        maxWidth: 200,
+    },
+    soundText: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '500',
+        flex: 1,
+    },
+    rightControls: {
+        position: 'absolute',
+        right: 12,
+        top: '15%',
+        zIndex: 10,
+        gap: 20,
+    },
+    controlButton: {
+        width: 44,
+        height: 44,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    bottomContainer: {
+        position: 'absolute',
+        bottom: 50,
+        left: 0,
+        right: 0,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        gap: 12,
+    },
+    nextButton: {
+        backgroundColor: '#F02C56',
+        paddingHorizontal: 40,
+        paddingVertical: 16,
+        borderRadius: 25,
+    },
+    nextButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    gradientOverlay: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: '30%',
+    },
+});

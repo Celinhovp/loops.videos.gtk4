@@ -20,10 +20,16 @@ export const ThemeProvider = (props: PropsWithChildren) => {
         initialColorScheme: (storage.getString('colorScheme') as ColorScheme) || 'light',
     });
 
-    const [colorScheme, toggleColorScheme, setColorScheme] = useAppColorScheme(tw);
+    const [colorScheme, , setTwColorScheme] = useAppColorScheme(tw);
+
+    const setColorScheme = (scheme: ColorScheme) => {
+        // Save synchronously on web so a fast app close cannot lose the choice.
+        storage.set('colorScheme', scheme);
+        setTwColorScheme(scheme);
+    };
 
     const toggleTheme = () => {
-        toggleColorScheme();
+        setColorScheme(colorScheme === 'dark' ? 'light' : 'dark');
     };
 
     useEffect(() => {
