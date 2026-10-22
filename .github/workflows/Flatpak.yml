@@ -47,7 +47,7 @@ jobs:
 
       - name: Gerar pacote Flatpak
         run: |
-          flatpak build-bundle repo loops.flatpak org.joinloops.Loops stable
+          flatpak build-bundle repo loops.flatpak org.joinloops.Loops master
 
       - name: Disponibilizar pacote para download
         uses: actions/upload-artifact@v4
