@@ -1,3 +1,4 @@
+```yaml
 name: Build Flatpak
 
 "on":
@@ -22,19 +23,33 @@ jobs:
       - name: Baixar o código
         uses: actions/checkout@v4
 
-      - name: Instalar ferramentas Flatpak
+      - name: Instalar ferramentas
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder imagemagick
+          sudo apt-get install -y \
+            flatpak \
+            flatpak-builder \
+            imagemagick \
+            ostree
 
       - name: Configurar Flathub
         run: |
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y --noninteractive flathub org.gnome.Platform//51 org.gnome.Sdk//51
+          sudo flatpak remote-add --if-not-exists \
+            flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+
+          sudo flatpak install -y --noninteractive \
+            flathub \
+            org.gnome.Platform//51 \
+            org.gnome.Sdk//51
 
       - name: Corrigir tamanho do ícone
         run: |
-          convert flatpak/org.joinloops.Loops.png -resize 512x512 flatpak/org.joinloops.Loops.png
+          if [ -f flatpak/org.joinloops.Loops.png ]; then
+            convert flatpak/org.joinloops.Loops.png \
+              -resize 512x512 \
+              flatpak/org.joinloops.Loops.png
+          fi
 
       - name: Compilar aplicativo
         run: |
@@ -45,11 +60,42 @@ jobs:
             build-dir \
             flatpak/org.joinloops.Loops.yaml
 
+      - name: Verificar compilação
+        run: |
+          echo "=== Arquivos instalados ==="
+          find build-dir/files -maxdepth 4 -type f -print | head -100
+
+          echo "=== Executável ==="
+          if [ ! -x build-dir/files/bin/loops ]; then
+            echo "ERRO: executável bin/loops não encontrado."
+            exit 1
+          fi
+
+          echo "=== Referências do repositório ==="
+          ostree refs --repo=repo
+
+          echo "=== Tamanho do conteúdo compilado ==="
+          du -sh build-dir/files
+
       - name: Gerar pacote Flatpak
         run: |
-          flatpak build-bundle repo loops.flatpak org.joinloops.Loops master
+          flatpak build-bundle \
+            repo \
+            loops.flatpak \
+            org.joinloops.Loops \
+            master
+
+          echo "=== Tamanho do pacote ==="
+          ls -lh loops.flatpak
+
+          SIZE=$(stat -c%s loops.flatpak)
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "ERRO: pacote menor que 1 MiB; não será publicado."
+            exit 1
+          fi
 
       - name: Disponibilizar pacote para download
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: loops-flatpak
@@ -58,7 +104,8 @@ jobs:
           retention-days: 30
 
       - name: Publicar na Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: success() && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: loops.flatpak
+```
