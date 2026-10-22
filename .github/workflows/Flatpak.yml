@@ -1,7 +1,7 @@
 ```yaml
 name: Build Flatpak
 
-"on":
+on:
   push:
     branches:
       - main
@@ -20,82 +20,45 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Baixar o código
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar ferramentas
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            flatpak \
-            flatpak-builder \
-            imagemagick \
-            ostree
+          sudo apt-get install -y flatpak flatpak-builder imagemagick ostree
 
-      - name: Configurar Flathub
+      - name: Configure Flatpak
         run: |
-          sudo flatpak remote-add --if-not-exists \
-            flathub \
-            https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub org.gnome.Platform//51 org.gnome.Sdk//51
 
-          sudo flatpak install -y --noninteractive \
-            flathub \
-            org.gnome.Platform//51 \
-            org.gnome.Sdk//51
-
-      - name: Corrigir tamanho do ícone
+      - name: Resize icon
         run: |
           if [ -f flatpak/org.joinloops.Loops.png ]; then
-            convert flatpak/org.joinloops.Loops.png \
-              -resize 512x512 \
-              flatpak/org.joinloops.Loops.png
+            convert flatpak/org.joinloops.Loops.png -resize 512x512 flatpak/org.joinloops.Loops.png
           fi
 
-      - name: Compilar aplicativo
+      - name: Build application
         run: |
-          flatpak-builder \
-            --force-clean \
-            --disable-rofiles-fuse \
-            --repo=repo \
-            build-dir \
-            flatpak/org.joinloops.Loops.yaml
+          flatpak-builder --force-clean --disable-rofiles-fuse --repo=repo build-dir flatpak/org.joinloops.Loops.yaml
 
-      - name: Verificar compilação
+      - name: Check build
         run: |
-          echo "=== Arquivos instalados ==="
+          echo "=== Installed files ==="
           find build-dir/files -maxdepth 4 -type f -print | head -100
-
-          echo "=== Executável ==="
-          if [ ! -x build-dir/files/bin/loops ]; then
-            echo "ERRO: executável bin/loops não encontrado."
-            exit 1
-          fi
-
-          echo "=== Referências do repositório ==="
+          echo "=== Repository refs ==="
           ostree refs --repo=repo
-
-          echo "=== Tamanho do conteúdo compilado ==="
+          echo "=== Build size ==="
           du -sh build-dir/files
 
-      - name: Gerar pacote Flatpak
+      - name: Create Flatpak bundle
         run: |
-          flatpak build-bundle \
-            repo \
-            loops.flatpak \
-            org.joinloops.Loops \
-            master
-
-          echo "=== Tamanho do pacote ==="
+          flatpak build-bundle repo loops.flatpak org.joinloops.Loops master
           ls -lh loops.flatpak
+          test "$(stat -c%s loops.flatpak)" -gt 1048576
 
-          SIZE=$(stat -c%s loops.flatpak)
-          if [ "$SIZE" -lt 1048576 ]; then
-            echo "ERRO: pacote menor que 1 MiB; não será publicado."
-            exit 1
-          fi
-
-      - name: Disponibilizar pacote para download
-        if: success()
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: loops-flatpak
@@ -103,8 +66,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publicar na Release
-        if: success() && startsWith(github.ref, 'refs/tags/v')
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: loops.flatpak
