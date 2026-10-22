@@ -14,9 +14,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: flatpak-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -27,10 +32,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder imagemagick ostree
 
-      - name: Configure Flatpak
+      - name: Configure Flathub
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install -y --user --noninteractive flathub org.gnome.Platform//47 org.gnome.Sdk//47
+
+      - name: Show manifest
+        run: |
+          ls -la flatpak/
+          cat flatpak/org.joinloops.Loops.yaml
 
       - name: Resize icon
         run: |
@@ -40,7 +49,13 @@ jobs:
 
       - name: Build application
         run: |
-          flatpak-builder --force-clean --disable-rofiles-fuse --repo=repo build-dir flatpak/org.joinloops.Loops.yaml
+          flatpak-builder \
+            --user \
+            --install-deps-from=flathub \
+            --force-clean \
+            --disable-rofiles-fuse \
+            --repo=repo \
+            build-dir flatpak/org.joinloops.Loops.yaml
 
       - name: Check build
         run: |
@@ -53,7 +68,10 @@ jobs:
 
       - name: Create Flatpak bundle
         run: |
-          flatpak build-bundle repo loops.flatpak org.joinloops.Loops master
+          REF=$(ostree refs --repo=repo | grep '^app/org.joinloops.Loops/' | head -n1)
+          BRANCH="${REF##*/}"
+          echo "Using branch: $BRANCH"
+          flatpak build-bundle repo loops.flatpak org.joinloops.Loops "$BRANCH"
           ls -lh loops.flatpak
           test "$(stat -c%s loops.flatpak)" -gt 1048576
 
