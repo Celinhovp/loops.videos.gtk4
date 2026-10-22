@@ -1,12 +1,14 @@
-```yaml
 name: Build Flatpak
 
-on:
+"on":
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches:
+      - main
+    tags:
+      - "v*"
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -27,18 +29,12 @@ jobs:
 
       - name: Configurar Flathub
         run: |
-          sudo flatpak remote-add --if-not-exists \
-            flathub https://flathub.org/repo/flathub.flatpakrepo
-
-          sudo flatpak install -y --noninteractive flathub \
-            org.gnome.Platform//51 \
-            org.gnome.Sdk//51
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub org.gnome.Platform//51 org.gnome.Sdk//51
 
       - name: Corrigir tamanho do ícone
         run: |
-          convert flatpak/org.joinloops.Loops.png \
-            -resize 512x512 \
-            flatpak/org.joinloops.Loops.png
+          convert flatpak/org.joinloops.Loops.png -resize 512x512 flatpak/org.joinloops.Loops.png
 
       - name: Compilar aplicativo
         run: |
@@ -49,11 +45,9 @@ jobs:
             build-dir \
             flatpak/org.joinloops.Loops.yaml
 
-      - name: Gerar pacote instalável
+      - name: Gerar pacote Flatpak
         run: |
-          flatpak build-bundle \
-            repo loops.flatpak \
-            org.joinloops.Loops stable
+          flatpak build-bundle repo loops.flatpak org.joinloops.Loops stable
 
       - name: Disponibilizar pacote para download
         uses: actions/upload-artifact@v4
@@ -63,9 +57,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publicar em Releases
+      - name: Publicar na Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           files: loops.flatpak
-```
