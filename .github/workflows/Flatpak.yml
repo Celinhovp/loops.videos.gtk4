@@ -1,0 +1,63 @@
+
+name: Build Flatpak
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar ferramentas Flatpak
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+
+      - name: Configurar Flathub
+        run: |
+          sudo flatpak remote-add --if-not-exists \
+            flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub \
+            org.gnome.Platform//51 \
+            org.gnome.Sdk//51
+
+      - name: Compilar aplicativo
+        run: |
+          flatpak-builder \
+            --force-clean \
+            --disable-rofiles-fuse \
+            --repo=repo \
+            build-dir \
+            flatpak/org.joinloops.Loops.yaml
+
+      - name: Gerar pacote instalável
+        run: |
+          flatpak build-bundle \
+            repo loops.flatpak \
+            org.joinloops.Loops stable
+
+      - name: Disponibilizar pacote para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: loops-flatpak
+          path: loops.flatpak
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar em Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: loops.flatpak
