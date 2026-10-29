@@ -486,6 +486,8 @@ class LoopsWindow(Adw.ApplicationWindow):
         self.busy = False
         self.is_seeking = False
         self.data_pages = {}
+        self.notification_views = {}
+        self.notifications_page = None
         self.conversation_by_row = {}
         self.progress_timer_id = None
         self.create_player = None
@@ -559,7 +561,7 @@ class LoopsWindow(Adw.ApplicationWindow):
         actions = [
             ("Atualizar feed", lambda: self._load_feed()),
             ("Explorar", lambda: self._open_explore_page()),
-            ("Notificações", lambda: self._open_data_page("notifications", "Notificações", "/api/v1/account/notifications")),
+            ("Notificações", self._open_notifications_page),
             ("Mensagens", lambda: self._open_data_page("messages", "Mensagens", "/api/v1/dm/conversations")),
             ("Meu perfil", lambda: self._open_profile_view()),
             ("Publicar vídeo", lambda: self._show_page("create")),
@@ -632,6 +634,7 @@ class LoopsWindow(Adw.ApplicationWindow):
             ("find-location-symbolic", "Explore", lambda: self._open_explore_page()),
             ("camera-video-symbolic", "Create", lambda: self._show_page("create")),
             ("mail-unread-symbolic", "Messages", lambda: self._open_data_page("messages", "Mensagens", "/api/v1/dm/conversations")),
+            ("preferences-system-notifications-symbolic", "Notifications", self._open_notifications_page),
             ("system-users-symbolic", "Following", self._open_following_suggestions_page),
             ("avatar-default-symbolic", "Profile", lambda: self._open_profile_view()),
             ("emblem-system-symbolic", "Settings", lambda: self._show_page("settings")),
@@ -1269,6 +1272,7 @@ class LoopsWindow(Adw.ApplicationWindow):
         dock_map = {
             "create": "Create",
             "settings": "Settings",
+            "notifications": "Notifications",
         }
         if name in dock_map:
             self._set_active_dock_button(dock_map[name])
@@ -3048,7 +3052,250 @@ class LoopsWindow(Adw.ApplicationWindow):
             else:
                 button.remove_css_class("active")
 
+    def _open_notifications_page(self):
+        categories = (
+            ("likes", "Curtidas", "videoLike"),
+            ("followers", "Quem me seguiu", "followers"),
+            ("comments", "Comentários", "comments"),
+        )
+        if self.notifications_page is None:
+            page = self._make_subpage("Notificações")
+            tabs = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            tabs.set_margin_start(18)
+            tabs.set_margin_end(18)
+            tabs.set_margin_top(12)
+            tabs.set_margin_bottom(10)
+            stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+            stack.set_hexpand(True)
+            stack.set_vexpand(True)
+            tab_buttons = []
+
+            for key, label, api_type in categories:
+                tab = Gtk.Button(label=label)
+                tab.add_css_class("tag-pill")
+                tab.connect("clicked", lambda _b, k=key: self._switch_notification_tab(k))
+                tabs.append(tab)
+                tab_buttons.append((tab, key))
+
+                status = Gtk.Label(label="Carregando…", xalign=0, wrap=True)
+                status.set_margin_start(18)
+                status.set_margin_end(18)
+                mark_all = Gtk.Button(label="Marcar tudo como lido")
+                mark_all.add_css_class("notification-mark-read")
+                mark_all.set_halign(Gtk.Align.END)
+                mark_all.set_margin_start(18)
+                mark_all.set_margin_end(18)
+                mark_all.connect("clicked", lambda _b, c=key: self._mark_all_notifications_read(c))
+
+                rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+                rows.add_css_class("boxed-list")
+                rows.connect("row-activated", self._on_notification_row_activated, key)
+                scroll = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+                scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+                scroll.set_child(rows)
+
+                content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                content.append(mark_all)
+                content.append(status)
+                content.append(scroll)
+                stack.add_named(content, key)
+                self.notification_views[key] = {
+                    "api_type": api_type,
+                    "path": f"/api/v1/account/notifications?type={urllib.parse.quote(api_type)}",
+                    "status": status,
+                    "mark_all": mark_all,
+                    "rows": rows,
+                    "items": [],
+                }
+
+            page.append(tabs)
+            page.append(stack)
+            self.content_stack.add_named(page, "notifications")
+            self.notifications_page = page
+            self.notification_stack = stack
+            self.notification_tab_buttons = tab_buttons
+            self._switch_notification_tab("likes")
+
+        self._show_page("notifications")
+        self._set_active_dock_button("Notifications")
+        for key, _label, _api_type in categories:
+            view = self.notification_views[key]
+            view["status"].set_text("Carregando…")
+            view["mark_all"].set_sensitive(False)
+            threading.Thread(target=self._fetch_notifications, args=(key,), daemon=True).start()
+
+    def _switch_notification_tab(self, key):
+        self.notification_stack.set_visible_child_name(key)
+        for button, button_key in self.notification_tab_buttons:
+            if button_key == key:
+                button.add_css_class("active")
+            else:
+                button.remove_css_class("active")
+
+    def _fetch_notifications(self, category):
+        view = self.notification_views[category]
+        try:
+            payload = soup_json(
+                "GET",
+                f"https://{self.session['instance']}{view['path']}",
+                token=self.session["access_token"],
+            )
+            items, _cursor = payload_items_and_cursor(payload, keys=("data", "notifications", "items"))
+            GLib.idle_add(self._render_notifications, category, items, None)
+        except Exception as error:
+            GLib.idle_add(self._render_notifications, category, [], str(error))
+
+    def _render_notifications(self, category, items, error):
+        view = self.notification_views[category]
+        rows = view["rows"]
+        child = rows.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            rows.remove(child)
+            child = following
+
+        if error:
+            view["items"] = []
+            view["status"].set_text(f"Não foi possível carregar: {error}")
+            view["mark_all"].set_sensitive(False)
+            return
+
+        items = [item for item in items if isinstance(item, dict)]
+        view["items"] = items
+        if not items:
+            view["status"].set_text("Nenhuma notificação por aqui ainda.")
+            view["mark_all"].set_sensitive(False)
+            return
+
+        unread_count = sum(1 for item in items if not item.get("read_at"))
+        view["status"].set_text(f"{len(items)} notificações · {unread_count} não lidas")
+        view["mark_all"].set_sensitive(unread_count > 0)
+
+        for item in items:
+            actor = item.get("actor") or item.get("account") or item.get("user") or {}
+            if not isinstance(actor, dict):
+                actor = {}
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            row_box.set_margin_start(12)
+            row_box.set_margin_end(12)
+            row_box.set_margin_top(10)
+            row_box.set_margin_bottom(10)
+            if not item.get("read_at"):
+                unread_dot = Gtk.Label(label="●")
+                unread_dot.add_css_class("notification-unread-dot")
+                row_box.append(unread_dot)
+            row_box.append(IMAGE_CACHE.make_avatar(actor.get("avatar"), size=42))
+
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            text_box.set_hexpand(True)
+            username = actor.get("username") or actor.get("name") or actor.get("display_name") or "Alguém"
+            actor_label = Gtk.Label(label=f"@{username}" if actor.get("username") else username, xalign=0)
+            actor_label.add_css_class("heading")
+            text_box.append(actor_label)
+            text_box.append(Gtk.Label(label=self._notification_message(category, item), xalign=0, wrap=True))
+            created = str(item.get("created_at") or "")
+            if created:
+                time_label = Gtk.Label(label=created.replace("T", " ")[:16], xalign=0)
+                time_label.add_css_class("dim-label")
+                text_box.append(time_label)
+            row_box.append(text_box)
+
+            if item.get("video_thumbnail"):
+                row_box.append(IMAGE_CACHE.make_thumbnail(item["video_thumbnail"], width=52, height=52))
+
+            row = Gtk.ListBoxRow()
+            row.set_child(row_box)
+            row.set_activatable(bool(actor.get("id")))
+            rows.append(row)
+
+        return False
+
+    def _notification_message(self, category, item):
+        kind = str(item.get("type") or "")
+        if category == "followers" or kind == "new_follower":
+            return "começou a seguir você."
+        if category == "likes":
+            if kind in ("comment.like", "commentReply.like"):
+                return "curtiu seu comentário."
+            return "curtiu seu vídeo."
+        if kind in ("video.commentReply", "commentReply"):
+            return "respondeu ao seu comentário."
+        return "comentou no seu vídeo."
+
+    def _on_notification_row_activated(self, rows, row, category):
+        view = self.notification_views.get(category) or {}
+        index = row.get_index()
+        items = view.get("items") or []
+        if index < 0 or index >= len(items):
+            return
+        item = items[index]
+        actor = item.get("actor") or item.get("account") or item.get("user") or {}
+        self._mark_notification_read(category, item)
+        if isinstance(actor, dict) and actor.get("id"):
+            self._open_profile_view(actor["id"])
+
+    def _mark_notification_read(self, category, item):
+        notification_id = item.get("id")
+        if not notification_id or item.get("read_at"):
+            return
+
+        def worker():
+            try:
+                soup_json(
+                    "POST",
+                    f"https://{self.session['instance']}/api/v1/account/notifications/{urllib.parse.quote(str(notification_id))}/read",
+                    token=self.session["access_token"],
+                )
+                GLib.idle_add(self._notification_read_done, category, item, None)
+            except Exception as error:
+                GLib.idle_add(self._notification_read_done, category, item, str(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _notification_read_done(self, category, item, error):
+        if error:
+            self.notification_views[category]["status"].set_text(f"Falha ao marcar como lida: {error}")
+            return False
+        item["read_at"] = "read"
+        self._render_notifications(category, self.notification_views[category]["items"], None)
+        return False
+
+    def _mark_all_notifications_read(self, category):
+        view = self.notification_views[category]
+        view["mark_all"].set_sensitive(False)
+        view["mark_all"].set_label("Marcando…")
+        api_type = view["api_type"]
+
+        def worker():
+            try:
+                soup_json(
+                    "POST",
+                    f"https://{self.session['instance']}/api/v1/account/notifications/mark-all-read",
+                    token=self.session["access_token"],
+                    json_body={"type": api_type},
+                )
+                GLib.idle_add(self._mark_all_notifications_done, category, None)
+            except Exception as error:
+                GLib.idle_add(self._mark_all_notifications_done, category, str(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _mark_all_notifications_done(self, category, error):
+        view = self.notification_views[category]
+        view["mark_all"].set_label("Marcar tudo como lido")
+        if error:
+            view["status"].set_text(f"Falha ao marcar como lidas: {error}")
+            view["mark_all"].set_sensitive(True)
+        else:
+            for item in view["items"]:
+                item["read_at"] = item.get("read_at") or "read"
+            self._render_notifications(category, view["items"], None)
+        return False
+
     def _open_data_page(self, name, title, path):
+        if name == "notifications":
+            self._open_notifications_page()
+            return
         if name not in self.data_pages:
             page = self._make_subpage(title)
 

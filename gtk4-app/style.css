@@ -493,6 +493,16 @@ window.loops-window {
     margin: 0;
 }
 
+.notification-mark-read {
+    color: #f02c56;
+    font-weight: 600;
+}
+
+.notification-unread-dot {
+    color: #f02c56;
+    font-size: 10px;
+}
+
 /* General GTK Polish */
 scale trough {
     min-height: 4px;
