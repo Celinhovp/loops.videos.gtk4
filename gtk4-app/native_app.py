@@ -39,7 +39,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Soup", "3.0")
 gi.require_version("Gst", "1.0")
-from gi.repository import Adw, Gdk, Gio, GLib, Gst, Gtk, Soup
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gst, Gtk, Soup
 
 Gst.init(None)
 
@@ -261,6 +262,104 @@ class ImageCache:
                 pass
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def make_animated_media(self, url, width=140, height=140, fallback_video_url=None):
+        """Show an animated GIF with GdkPixbuf, falling back to a looping video."""
+        frame = Gtk.AspectFrame()
+        frame.set_ratio(width / max(1, height))
+        frame.set_obey_child(False)
+        frame.set_size_request(width, height)
+        frame.set_overflow(Gtk.Overflow.HIDDEN)
+
+        picture = Gtk.Picture()
+        picture.set_size_request(width, height)
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_can_shrink(True)
+        picture.set_hexpand(True)
+        picture.set_vexpand(True)
+        frame.set_child(picture)
+
+        def show_video(uri):
+            if not uri:
+                return False
+            try:
+                video = Gtk.Video.new_for_file(Gio.File.new_for_uri(uri))
+                video.set_size_request(width, height)
+                video.set_loop(True)
+                video.set_autoplay(True)
+                stream = video.get_media_stream()
+                if stream:
+                    stream.set_muted(True)
+                frame.set_child(video)
+            except Exception as error:
+                print(f"GIF video fallback failed: {error}")
+            return False
+
+        if not url:
+            GLib.idle_add(show_video, fallback_video_url)
+            return frame
+
+        def worker():
+            try:
+                fname = hashlib.sha256(url.encode()).hexdigest()
+                local_path = self.cache_dir / f"{fname}.img"
+                if not local_path.exists():
+                    msg = Soup.Message.new("GET", url)
+                    response = self._session.send_and_read(msg, None)
+                    if msg.get_status() != 200 or not response:
+                        raise RuntimeError(f"HTTP {msg.get_status()}")
+                    local_path.write_bytes(response.get_data())
+                animation = GdkPixbuf.PixbufAnimation.new_from_file(str(local_path))
+                if animation.is_static_image():
+                    raise RuntimeError("A prévia é uma imagem sem animação.")
+                GLib.idle_add(self._start_pixbuf_animation, frame, picture, animation)
+            except Exception as error:
+                print(f"GIF image decode failed: {error}")
+                GLib.idle_add(show_video, fallback_video_url)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return frame
+
+    def _start_pixbuf_animation(self, frame, picture, animation):
+        iterator = animation.get_iter(None)
+        state = {"source": None}
+
+        def schedule_next():
+            delay = iterator.get_delay_time()
+            if delay < 0 or not frame.get_mapped():
+                return
+            state["source"] = GLib.timeout_add(max(20, delay), advance)
+
+        def advance():
+            state["source"] = None
+            if not frame.get_mapped():
+                return False
+            iterator.advance(None)
+            pixbuf = iterator.get_pixbuf()
+            if pixbuf:
+                picture.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+            schedule_next()
+            return False
+
+        def on_map(_widget):
+            pixbuf = iterator.get_pixbuf()
+            if pixbuf:
+                picture.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+            schedule_next()
+
+        def on_unmap(_widget):
+            source_id = state.get("source")
+            if source_id:
+                GLib.source_remove(source_id)
+                state["source"] = None
+
+        frame.connect("map", on_map)
+        frame.connect("unmap", on_unmap)
+        pixbuf = iterator.get_pixbuf()
+        if pixbuf:
+            picture.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+        schedule_next()
+        return False
 
     def make_avatar(self, url, size=36):
         frame = Gtk.AspectFrame()
@@ -1811,16 +1910,27 @@ class LoopsWindow(Adw.ApplicationWindow):
             media_list = comment.get("media") or []
             if media_list and isinstance(media_list, list):
                 m = media_list[0]
-                gif_url = m.get("url") or ""
-                if gif_url:
-                    gif_pic = IMAGE_CACHE.make_thumbnail(gif_url, width=140, height=140)
-                    gif_frame = Gtk.AspectFrame()
-                    gif_frame.set_ratio(1.0)
-                    gif_frame.set_obey_child(False)
-                    gif_frame.set_size_request(140, 140)
-                    gif_frame.set_child(gif_pic)
-                    gif_frame.set_margin_top(4)
-                    details_box.append(gif_frame)
+                gif_item = m.get("item") or m.get("gif") or m
+                full = gif_item.get("full") or {}
+                preview = gif_item.get("preview") or {}
+                webm = gif_item.get("webm") or {}
+                mp4 = gif_item.get("mp4") or {}
+                gif_url = (
+                    full.get("url")
+                    or m.get("url")
+                    or preview.get("url")
+                    or ""
+                )
+                video_url = webm.get("url") or mp4.get("url") or ""
+                if gif_url or video_url:
+                    gif_view = IMAGE_CACHE.make_animated_media(
+                        gif_url,
+                        width=140,
+                        height=140,
+                        fallback_video_url=video_url,
+                    )
+                    gif_view.set_margin_top(4)
+                    details_box.append(gif_view)
 
             card.append(details_box)
 
@@ -1980,16 +2090,20 @@ class LoopsWindow(Adw.ApplicationWindow):
             btn = Gtk.Button()
             btn.add_css_class("flat")
 
+            full_obj = gif.get("full") or {}
             preview_obj = gif.get("preview") or {}
-            preview_url = preview_obj.get("url") or gif.get("url") or ""
-            thumb = IMAGE_CACHE.make_thumbnail(preview_url, width=140, height=140)
-            frame = Gtk.AspectFrame()
-            frame.set_ratio(1.0)
-            frame.set_obey_child(False)
-            thumb.set_hexpand(True)
-            thumb.set_vexpand(True)
-            frame.set_child(thumb)
-            btn.set_child(frame)
+            webm_obj = gif.get("webm") or {}
+            mp4_obj = gif.get("mp4") or {}
+            full_url = full_obj.get("url") or ""
+            preview_url = full_url or preview_obj.get("url") or gif.get("url") or ""
+            fallback_video_url = webm_obj.get("url") or mp4_obj.get("url") or ""
+            preview = IMAGE_CACHE.make_animated_media(
+                preview_url,
+                width=140,
+                height=140,
+                fallback_video_url=fallback_video_url,
+            )
+            btn.set_child(preview)
 
             # Send GIF directly as a comment when clicked (no URL text insertion)
             btn.connect(
