@@ -2863,9 +2863,13 @@ class LoopsWindow(Adw.ApplicationWindow):
         # Tab filter pills: Tudo | Usuários | Vídeos | Hashtags
         tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.search_type = "all"
+        self.search_filter_buttons = []
         for label, stype in (("Tudo", "all"), ("Usuários", "users"), ("Vídeos", "videos"), ("Hashtags", "hashtags")):
             b = Gtk.Button(label=label)
             b.add_css_class("tag-pill")
+            if stype == self.search_type:
+                b.add_css_class("active")
+            self.search_filter_buttons.append((b, stype))
             b.connect("clicked", lambda _b, t=stype, qe=query_entry: self._set_search_filter(t, qe))
             tab_box.append(b)
         container.append(tab_box)
@@ -2885,6 +2889,11 @@ class LoopsWindow(Adw.ApplicationWindow):
 
     def _set_search_filter(self, stype, entry):
         self.search_type = stype
+        for button, button_type in self.search_filter_buttons:
+            if button_type == stype:
+                button.add_css_class("active")
+            else:
+                button.remove_css_class("active")
         entry.activate()
 
     def _perform_search(self, query, status_lbl, results_box):
