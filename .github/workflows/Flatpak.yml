@@ -81,10 +81,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: continuous
-          name: "Versão de Desenvolvimento (Continuous)"
+          name: "Versão de Desenvolvimento"
           body: "Build automático gerado pelas alterações mais recentes na branch main."
           files: loops.flatpak
-          prerelease: true
+          prerelease: false
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
