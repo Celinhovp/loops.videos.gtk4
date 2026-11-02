@@ -503,6 +503,17 @@ window.loops-window {
     font-size: 10px;
 }
 
+.notification-count-badge {
+    color: #ffffff;
+    background-color: #f02c56;
+    border-radius: 999px;
+    padding: 0 4px;
+    min-width: 16px;
+    min-height: 16px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
 /* General GTK Polish */
 scale trough {
     min-height: 4px;

@@ -1,0 +1,26 @@
+Local comment translation components
+====================================
+
+CTranslate2 4.8.4 — MIT License
+https://github.com/OpenNMT/CTranslate2/blob/master/LICENSE
+
+SentencePiece 0.2.2 — Apache License 2.0
+https://github.com/google/sentencepiece/blob/master/LICENSE
+
+langdetect 1.0.9 — MIT License
+https://github.com/Mimino666/langdetect/blob/master/LICENSE
+
+six 1.17.0 — MIT License
+https://github.com/benjaminp/six/blob/master/LICENSE
+
+PyYAML 6.0.3 — MIT License
+https://github.com/yaml/pyyaml/blob/main/LICENSE
+
+NumPy 2.5.4 — BSD 3-Clause License
+https://github.com/numpy/numpy/blob/main/LICENSE.txt
+
+Argos translation models are downloaded on demand from the Argos Translate
+package index. Argos states that its model archives are released under MIT or
+CC0; individual model READMEs may include additional source attribution.
+https://github.com/argosopentech/argos-translate
+https://github.com/argosopentech/argospm-index

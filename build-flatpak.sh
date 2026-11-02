@@ -18,7 +18,15 @@ mkdir -p "${BUILD_DIR}/files/share/icons"
 # Copia aplicação GTK4
 install -Dm755 gtk4-app/main.py "${BUILD_DIR}/files/bin/loops"
 install -Dm644 gtk4-app/native_app.py "${BUILD_DIR}/files/bin/native_app.py"
+install -Dm644 gtk4-app/local_translation.py "${BUILD_DIR}/files/bin/local_translation.py"
 install -Dm644 gtk4-app/style.css "${BUILD_DIR}/files/bin/style.css"
+install -Dm644 flatpak/translation-licenses.txt "${BUILD_DIR}/files/share/licenses/org.joinloops.Loops/translation-licenses.txt"
+
+# Open-source local comment translation runtime (CPU only, Flatpak Python 3.14).
+python3 flatpak/install_translation_wheels.py \
+    --prefix "${BUILD_DIR}/files" \
+    --download \
+    --wheel-dir "${SCRIPT_DIR}/.flatpak-wheels"
 
 # Copia arquivos desktop e metainfo
 install -Dm644 flatpak/org.joinloops.Loops.desktop "${BUILD_DIR}/files/share/applications/org.joinloops.Loops.desktop"
@@ -44,6 +52,7 @@ filesystems=xdg-download;
 [Environment]
 # VA-API hardware decoding first; FFmpeg/libav (avdec_*) as software fallback.
 GST_PLUGIN_FEATURE_RANK=vah264dec:512,vah265dec:512,vavp9dec:512,vaav1dec:512,vavp8dec:512,vapostproc:512,avdec_h264:256,avdec_hevc:256,avdec_vp9:256,avdec_aac:256
+PYTHONPATH=/app/lib/python3.14/site-packages
 EOF
 
 echo "==> Finalizando permissões e metadados do Flatpak..."
@@ -51,6 +60,8 @@ flatpak build-finish "${BUILD_DIR}" \
     --command=loops \
     --share=ipc \
     --share=network \
+    --env=PYTHONPATH=/app/lib/python3.14/site-packages \
+    --own-name=org.mpris.MediaPlayer2.Loops \
     --socket=wayland \
     --socket=fallback-x11 \
     --socket=pulseaudio \

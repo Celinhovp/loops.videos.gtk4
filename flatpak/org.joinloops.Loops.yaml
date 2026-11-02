@@ -7,6 +7,8 @@ command: loops
 finish-args:
   - --share=ipc
   - --share=network
+  - --env=PYTHONPATH=/app/lib/python3.14/site-packages
+  - --own-name=org.mpris.MediaPlayer2.Loops
   - --socket=fallback-x11
   - --socket=wayland
   - --socket=pulseaudio
@@ -20,7 +22,9 @@ modules:
     build-commands:
       - install -Dm755 gtk4-app/main.py /app/bin/loops
       - install -Dm644 gtk4-app/native_app.py /app/bin/native_app.py
+      - install -Dm644 gtk4-app/local_translation.py /app/bin/local_translation.py
       - install -Dm644 gtk4-app/style.css /app/bin/style.css
+      - install -Dm644 flatpak/translation-licenses.txt /app/share/licenses/org.joinloops.Loops/translation-licenses.txt
       - install -Dm644 flatpak/org.joinloops.Loops.desktop /app/share/applications/org.joinloops.Loops.desktop
       - install -Dm644 flatpak/org.joinloops.Loops.metainfo.xml /app/share/metainfo/org.joinloops.Loops.metainfo.xml
       - cp -r flatpak/icons/* /app/share/icons/
@@ -28,3 +32,36 @@ modules:
     sources:
       - type: dir
         path: ..
+  - name: local-translation-runtime
+    buildsystem: simple
+    only-arches:
+      - x86_64
+    build-commands:
+      - python3 flatpak/install_translation_wheels.py --prefix /app --wheel-dir .
+    sources:
+      - type: dir
+        path: ..
+      - type: file
+        url: https://files.pythonhosted.org/packages/0d/f4/d14d4ad8d1eac0e49aafcc11ff9ec83ac5758ae23acc526f15b73c980c19/ctranslate2-4.8.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+        sha256: e838fb78e8db9daee96187a08c3d0839bf45bd4853afda839f3b4b4979336ed6
+        dest-filename: ctranslate2-4.8.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - type: file
+        url: https://files.pythonhosted.org/packages/24/b3/718847349da7b25c8220ed86d85b89080af94740b2d87a59198104ae5c51/sentencepiece-0.2.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+        sha256: 8d44b20234905ff022b7d535f79d1f823ad7670c9851cc4f03cdc34787cdb3ab
+        dest-filename: sentencepiece-0.2.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - type: file
+        url: https://files.pythonhosted.org/packages/d0/04/31f2f175c475c0274a7fb20552e18c4f5b1ef04b211dd4d7301ca6bf4534/langdetect-1.0.9-py2-none-any.whl
+        sha256: 7cbc0746252f19e76f77c0b1690aadf01963be835ef0cd4b56dddf2a8f1dfc2a
+        dest-filename: langdetect-1.0.9-py2-none-any.whl
+      - type: file
+        url: https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl
+        sha256: 4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+        dest-filename: six-1.17.0-py2.py3-none-any.whl
+      - type: file
+        url: https://files.pythonhosted.org/packages/88/f9/16491d7ed2a919954993e48aa941b200f38040928474c9e85ea9e64222c3/pyyaml-6.0.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+        sha256: c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
+        dest-filename: pyyaml-6.0.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - type: file
+        url: https://files.pythonhosted.org/packages/16/d5/928078d2b28f26829b138b4a6c3980045022fb409f570657a224ae60ef4e/numpy-2.5.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+        sha256: d549420b8858885cea8838a727842249218b9c1da24dd517e25c9c7a948310a3
+        dest-filename: numpy-2.5.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl

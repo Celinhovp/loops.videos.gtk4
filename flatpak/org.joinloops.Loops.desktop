@@ -10,6 +10,7 @@ Terminal=false
 Categories=AudioVideo;Video;Network;Feed;
 Keywords=loops;video;fediverse;pixelfed;social;short;reels;tiktok;
 StartupWMClass=org.joinloops.Loops
+X-GNOME-UsesNotifications=true
 MimeType=x-scheme-handler/loops;
 Actions=NewWindow;
 

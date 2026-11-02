@@ -46,6 +46,7 @@ app-example
 .home/
 .npm/
 build_flatpak/
+.flatpak-wheels/
 repo/
 loops.flatpak
 __pycache__/

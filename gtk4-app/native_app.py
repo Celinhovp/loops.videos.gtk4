@@ -18,6 +18,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import random
 import secrets
 import shutil
 import threading
@@ -41,6 +42,7 @@ gi.require_version("Soup", "3.0")
 gi.require_version("Gst", "1.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gst, Gtk, Soup
+from local_translation import translate_comment as translate_comment_locally
 
 Gst.init(None)
 
@@ -52,6 +54,24 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36 LoopsDesktop/1.0"
 )
+
+TRANSLATION_LANGUAGES = [
+    ("pt", "Português"),
+    ("en", "English"),
+    ("es", "Español"),
+    ("fr", "Français"),
+    ("de", "Deutsch"),
+    ("it", "Italiano"),
+    ("nl", "Nederlands"),
+    ("ru", "Русский"),
+    ("uk", "Українська"),
+    ("pl", "Polski"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("zh", "中文"),
+    ("ar", "العربية"),
+    ("hi", "हिन्दी"),
+]
 
 
 # ==============================================================================
@@ -263,7 +283,8 @@ class ImageCache:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def make_animated_media(self, url, width=140, height=140, fallback_video_url=None):
+    def make_animated_media(self, url, width=140, height=140, fallback_video_url=None,
+                            allow_video_fallback=True):
         """Show an animated GIF with GdkPixbuf, falling back to a looping video."""
         frame = Gtk.AspectFrame()
         frame.set_ratio(width / max(1, height))
@@ -296,7 +317,8 @@ class ImageCache:
             return False
 
         if not url:
-            GLib.idle_add(show_video, fallback_video_url)
+            if allow_video_fallback:
+                GLib.idle_add(show_video, fallback_video_url)
             return frame
 
         def worker():
@@ -311,11 +333,70 @@ class ImageCache:
                     local_path.write_bytes(response.get_data())
                 animation = GdkPixbuf.PixbufAnimation.new_from_file(str(local_path))
                 if animation.is_static_image():
-                    raise RuntimeError("A prévia é uma imagem sem animação.")
+                    pixbuf = animation.get_static_image()
+                    if pixbuf:
+                        GLib.idle_add(picture.set_paintable, Gdk.Texture.new_for_pixbuf(pixbuf))
+                    if allow_video_fallback:
+                        GLib.idle_add(show_video, fallback_video_url)
+                    return
                 GLib.idle_add(self._start_pixbuf_animation, frame, picture, animation)
             except Exception as error:
                 print(f"GIF image decode failed: {error}")
-                GLib.idle_add(show_video, fallback_video_url)
+                if allow_video_fallback and fallback_video_url:
+                    GLib.idle_add(show_video, fallback_video_url)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return frame
+
+    def make_autoplay_video(self, url, mime="video/mp4", width=140, height=140):
+        """Render a muted, looping video as a paintable, without player controls."""
+        frame = Gtk.AspectFrame()
+        frame.set_ratio(width / max(1, height))
+        frame.set_obey_child(False)
+        frame.set_size_request(width, height)
+        frame.set_overflow(Gtk.Overflow.HIDDEN)
+
+        picture = Gtk.Picture()
+        picture.set_size_request(width, height)
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_can_shrink(True)
+        picture.set_hexpand(True)
+        picture.set_vexpand(True)
+        frame.set_child(picture)
+
+        extensions = {
+            "video/webm": ".webm",
+            "video/mp4": ".mp4",
+            "video/quicktime": ".mov",
+        }
+        suffix = extensions.get((mime or "").lower(), ".mp4")
+        local_path = self.cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()}{suffix}"
+
+        def worker():
+            try:
+                if not local_path.exists():
+                    msg = Soup.Message.new("GET", url)
+                    response = self._session.send_and_read(msg, None)
+                    if msg.get_status() != 200 or not response:
+                        raise RuntimeError(f"HTTP {msg.get_status()}")
+                    local_path.write_bytes(response.get_data())
+                GLib.idle_add(show_video_file, str(local_path))
+            except Exception as error:
+                print(f"Comment GIF video load failed: {error}")
+
+        def show_video_file(path):
+            try:
+                media = Gtk.MediaFile.new_for_file(Gio.File.new_for_path(path))
+                media.set_loop(True)
+                media.set_muted(True)
+                picture.set_paintable(media)
+                frame.connect("map", lambda _frame: media.play())
+                frame.connect("unmap", lambda _frame: media.pause())
+                if frame.get_mapped():
+                    media.play()
+            except Exception as error:
+                print(f"Comment GIF video playback failed: {error}")
+            return False
 
         threading.Thread(target=worker, daemon=True).start()
         return frame
@@ -418,6 +499,9 @@ class GstPlayer:
         self.on_eos = on_eos
         self.duration_sec = 0.0
         self.position_sec = 0.0
+        self.volume = 1.0
+        self.on_state_changed = None
+        self.on_seeked = None
 
         self.playbin = Gst.ElementFactory.make("playbin3", None)
         self.sink = Gst.ElementFactory.make("gtk4paintablesink", None)
@@ -488,10 +572,14 @@ class GstPlayer:
             Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
             ns,
         )
+        if self.on_seeked:
+            self.on_seeked(position_sec)
 
     def set_playing(self, playing):
         self.playing = bool(playing)
         self.playbin.set_state(Gst.State.PLAYING if playing else Gst.State.PAUSED)
+        if self.on_state_changed:
+            self.on_state_changed()
 
     def toggle_playing(self):
         self.set_playing(not self.playing)
@@ -500,6 +588,10 @@ class GstPlayer:
     def set_muted(self, muted):
         self.playbin.set_property("mute", bool(muted))
 
+    def set_volume(self, volume):
+        self.volume = max(0.0, min(1.0, float(volume)))
+        self.playbin.set_property("volume", self.volume)
+
     def stop(self):
         self.playbin.set_state(Gst.State.NULL)
         try:
@@ -507,6 +599,314 @@ class GstPlayer:
             self._bus.remove_signal_watch()
         except Exception:
             pass
+
+
+# ==============================================================================
+# MPRIS D-Bus service
+# ==============================================================================
+
+class MprisService:
+    """Expose the current feed video through the freedesktop MPRIS interface."""
+
+    OBJECT_PATH = "/org/mpris/MediaPlayer2"
+    BUS_NAME = "org.mpris.MediaPlayer2.Loops"
+
+    XML = """
+    <node>
+      <interface name="org.mpris.MediaPlayer2">
+        <method name="Raise"/>
+        <method name="Quit"/>
+        <property name="CanQuit" type="b" access="read"/>
+        <property name="CanRaise" type="b" access="read"/>
+        <property name="HasTrackList" type="b" access="read"/>
+        <property name="Identity" type="s" access="read"/>
+        <property name="DesktopEntry" type="s" access="read"/>
+        <property name="SupportedUriSchemes" type="as" access="read"/>
+        <property name="SupportedMimeTypes" type="as" access="read"/>
+      </interface>
+      <interface name="org.mpris.MediaPlayer2.Player">
+        <method name="Next"/>
+        <method name="Previous"/>
+        <method name="Pause"/>
+        <method name="PlayPause"/>
+        <method name="Stop"/>
+        <method name="Play"/>
+        <method name="Seek"><arg name="Offset" type="x" direction="in"/></method>
+        <method name="SetPosition"><arg name="TrackId" type="o" direction="in"/><arg name="Position" type="x" direction="in"/></method>
+        <method name="OpenUri"><arg name="Uri" type="s" direction="in"/></method>
+        <signal name="Seeked"><arg name="Position" type="x"/></signal>
+        <property name="PlaybackStatus" type="s" access="read"/>
+        <property name="LoopStatus" type="s" access="readwrite"/>
+        <property name="Rate" type="d" access="read"/>
+        <property name="Shuffle" type="b" access="readwrite"/>
+        <property name="Metadata" type="a{sv}" access="read"/>
+        <property name="Volume" type="d" access="readwrite"/>
+        <property name="Position" type="x" access="read"/>
+        <property name="MinimumRate" type="d" access="read"/>
+        <property name="MaximumRate" type="d" access="read"/>
+        <property name="CanGoNext" type="b" access="read"/>
+        <property name="CanGoPrevious" type="b" access="read"/>
+        <property name="CanPlay" type="b" access="read"/>
+        <property name="CanPause" type="b" access="read"/>
+        <property name="CanSeek" type="b" access="read"/>
+        <property name="CanControl" type="b" access="read"/>
+      </interface>
+    </node>
+    """
+
+    def __init__(self, window):
+        self.window = window
+        self.player = window.player
+        self.connection = None
+        self.registration_ids = []
+        self.owner_id = 0
+        self.track_id = "/org/mpris/MediaPlayer2/Track/NoTrack"
+        self.track_url = ""
+        self.title = "Loops"
+        self.artist = "Loops"
+        self.art_url = ""
+        self.loop_status = "Track"
+        self.shuffle = False
+        self._last_duration = -1
+
+        try:
+            node = Gio.DBusNodeInfo.new_for_xml(self.XML)
+            self.connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            for interface_name in ("org.mpris.MediaPlayer2", "org.mpris.MediaPlayer2.Player"):
+                interface = node.lookup_interface(interface_name)
+                registration_id = self.connection.register_object(
+                    self.OBJECT_PATH, interface, self._method_call,
+                    self._get_property, self._set_property
+                )
+                self.registration_ids.append(registration_id)
+            self.owner_id = Gio.bus_own_name_on_connection(
+                self.connection, self.BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                None, self._name_lost
+            )
+            self.player.on_state_changed = self._playback_changed
+            self.player.on_seeked = self._seeked
+            self.player.on_eos = self._end_of_track
+        except Exception as error:
+            print(f"MPRIS indisponível: {error}")
+            self.close()
+
+    def _name_lost(self, _connection, name):
+        print(f"Não foi possível registrar o serviço MPRIS {name}.")
+
+    def _emit_properties(self, interface_name, properties):
+        if not self.connection:
+            return
+        try:
+            self.connection.emit_signal(
+                None, self.OBJECT_PATH, "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                GLib.Variant("(sa{sv}as)", (interface_name, properties, [])),
+            )
+        except Exception as error:
+            print(f"Falha ao atualizar propriedades MPRIS: {error}")
+
+    def _metadata(self):
+        _position, duration = self.player.update_position_and_duration()
+        values = {
+            "mpris:trackid": GLib.Variant("o", self.track_id),
+            "xesam:title": GLib.Variant("s", self.title),
+            "xesam:artist": GLib.Variant("as", [self.artist]),
+            "xesam:album": GLib.Variant("s", "Loops"),
+            "xesam:url": GLib.Variant("s", self.track_url),
+            "mpris:length": GLib.Variant("x", max(0, int(duration * 1_000_000))),
+        }
+        if self.art_url:
+            values["mpris:artUrl"] = GLib.Variant("s", self.art_url)
+        return GLib.Variant("a{sv}", values)
+
+    def set_track(self, item, url, author, caption):
+        self.track_url = str(url or "")
+        self.title = str(caption or item.get("title") or item.get("name") or f"Vídeo de {author}")
+        self.artist = str(author or "Loops")
+        media = item.get("media") or item.get("video") or {}
+        if not isinstance(media, dict):
+            media = {}
+        art = media.get("thumbnail") or media.get("thumbnail_url") or item.get("thumbnail") or item.get("thumbnail_url") or ""
+        if art.startswith("/"):
+            art = f"https://{self.window.session.get('instance', DEFAULT_INSTANCE)}{art}"
+        self.art_url = art
+        safe_id = hashlib.sha256(str(item.get("id") or url or self.title).encode()).hexdigest()[:20]
+        self.track_id = f"/org/mpris/MediaPlayer2/Track/{safe_id}"
+        self._last_duration = -1
+        self._emit_properties("org.mpris.MediaPlayer2.Player", {
+            "Metadata": self._metadata(),
+            "CanGoNext": GLib.Variant("b", self._can_next()),
+            "CanGoPrevious": GLib.Variant("b", self.window.video_index > 0),
+        })
+
+    def _can_next(self):
+        return self.window.video_index + 1 < len(self.window.videos) or bool(self.window.feed_cursor)
+
+    def _playback_status(self):
+        if not self.track_url:
+            return "Stopped"
+        return "Playing" if self.player.playing else "Paused"
+
+    def refresh(self):
+        _position, duration = self.player.update_position_and_duration()
+        rounded_duration = int(duration * 1_000_000)
+        if rounded_duration != self._last_duration:
+            self._last_duration = rounded_duration
+            self._emit_properties("org.mpris.MediaPlayer2.Player", {"Metadata": self._metadata()})
+
+    def _playback_changed(self):
+        self._emit_properties("org.mpris.MediaPlayer2.Player", {
+            "PlaybackStatus": GLib.Variant("s", self._playback_status())
+        })
+
+    def sync_volume(self):
+        volume = 0.0 if self.player.playbin.get_property("mute") else self.player.volume
+        self._emit_properties("org.mpris.MediaPlayer2.Player", {
+            "Volume": GLib.Variant("d", volume)
+        })
+
+    def _seeked(self, position_sec):
+        if self.connection:
+            try:
+                self.connection.emit_signal(
+                    None, self.OBJECT_PATH, "org.mpris.MediaPlayer2.Player",
+                    "Seeked", GLib.Variant("(x)", (int(position_sec * 1_000_000),))
+                )
+            except Exception as error:
+                print(f"Falha no sinal MPRIS Seeked: {error}")
+
+    def _set_playing(self, playing):
+        self.player.set_playing(playing)
+        self.window.ctrl_play_btn.set_icon_name(
+            "media-playback-pause-symbolic" if playing else "media-playback-start-symbolic"
+        )
+        self.window.play_overlay_btn.set_visible(not playing)
+
+    def _next(self, direction):
+        videos = self.window.videos
+        if self.shuffle and len(videos) > 1:
+            choices = [i for i in range(len(videos)) if i != self.window.video_index]
+            self.window._show_video(random.choice(choices))
+        else:
+            self.window._show_video(self.window.video_index + direction)
+
+    def _end_of_track(self):
+        if self.loop_status == "Playlist":
+            self.window._show_video(self.window.video_index + 1)
+
+    def _method_call(self, _connection, _sender, _path, interface, method, parameters, invocation):
+        try:
+            if interface == "org.mpris.MediaPlayer2":
+                if method == "Raise":
+                    self.window.present()
+                elif method == "Quit":
+                    self.window.get_application().quit()
+            elif interface == "org.mpris.MediaPlayer2.Player":
+                args = parameters.unpack()
+                if method == "Play":
+                    self._set_playing(True)
+                elif method == "Pause":
+                    self._set_playing(False)
+                elif method == "PlayPause":
+                    self._set_playing(not self.player.playing)
+                elif method == "Stop":
+                    self._set_playing(False)
+                    self.player.seek(0)
+                elif method == "Next":
+                    self._next(1)
+                elif method == "Previous":
+                    self._next(-1)
+                elif method == "Seek":
+                    position, _duration = self.player.update_position_and_duration()
+                    self.player.seek(max(0, position + args[0] / 1_000_000))
+                elif method == "SetPosition":
+                    if args[0] == self.track_id:
+                        self.player.seek(max(0, args[1] / 1_000_000))
+                elif method == "OpenUri":
+                    self.track_url = str(args[0])
+                    self.title = self.track_url.rsplit("/", 1)[-1] or "Loops"
+                    self.artist = "Loops"
+                    safe_id = hashlib.sha256(self.track_url.encode()).hexdigest()[:20]
+                    self.track_id = f"/org/mpris/MediaPlayer2/Track/{safe_id}"
+                    self.player.load_uri(self.track_url, autoplay=True)
+                    self._emit_properties("org.mpris.MediaPlayer2.Player", {"Metadata": self._metadata()})
+                invocation.return_value(GLib.Variant("()", ()))
+            else:
+                invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+        except Exception as error:
+            invocation.return_dbus_error("org.mpris.MediaPlayer2.Player.Error.Failed", str(error))
+
+    def _get_property(self, _connection, _sender, _path, interface, name):
+        if interface == "org.mpris.MediaPlayer2":
+            root_values = {
+                "CanQuit": GLib.Variant("b", True),
+                "CanRaise": GLib.Variant("b", True),
+                "HasTrackList": GLib.Variant("b", False),
+                "Identity": GLib.Variant("s", APP_NAME),
+                "DesktopEntry": GLib.Variant("s", APP_ID),
+                "SupportedUriSchemes": GLib.Variant("as", ["file", "http", "https"]),
+                "SupportedMimeTypes": GLib.Variant("as", ["video/mp4", "video/webm", "video/ogg"]),
+            }
+            return root_values.get(name)
+
+        position, duration = self.player.update_position_and_duration()
+        player_values = {
+            "PlaybackStatus": GLib.Variant("s", self._playback_status()),
+            "LoopStatus": GLib.Variant("s", self.loop_status),
+            "Rate": GLib.Variant("d", 1.0),
+            "Shuffle": GLib.Variant("b", self.shuffle),
+            "Metadata": self._metadata(),
+            "Volume": GLib.Variant("d", 0.0 if self.player.playbin.get_property("mute") else self.player.volume),
+            "Position": GLib.Variant("x", max(0, int(position * 1_000_000))),
+            "MinimumRate": GLib.Variant("d", 1.0),
+            "MaximumRate": GLib.Variant("d", 1.0),
+            "CanGoNext": GLib.Variant("b", self._can_next()),
+            "CanGoPrevious": GLib.Variant("b", self.window.video_index > 0),
+            "CanPlay": GLib.Variant("b", bool(self.track_url)),
+            "CanPause": GLib.Variant("b", bool(self.track_url)),
+            "CanSeek": GLib.Variant("b", duration > 0),
+            "CanControl": GLib.Variant("b", True),
+        }
+        return player_values.get(name)
+
+    def _set_property(self, _connection, _sender, _path, interface, name, value):
+        if interface != "org.mpris.MediaPlayer2.Player":
+            return False
+        unpacked = value.unpack()
+        if name == "LoopStatus" and unpacked in ("None", "Track", "Playlist"):
+            self.loop_status = unpacked
+            self.player.loop = unpacked == "Track"
+            self.player.on_eos = self._end_of_track
+        elif name == "Shuffle":
+            self.shuffle = bool(unpacked)
+        elif name == "Volume":
+            self.player.set_volume(unpacked)
+            self.player.set_muted(self.player.volume == 0.0)
+            self.sync_volume()
+            pref = load_preferences()
+            pref["video_muted"] = self.player.volume == 0.0
+            save_preferences(pref)
+            self.window.ctrl_volume_btn.set_icon_name(
+                "audio-volume-muted-symbolic" if self.player.volume == 0.0 else "audio-volume-high-symbolic"
+            )
+        else:
+            return False
+        if name != "Volume":
+            self._emit_properties(interface, {name: value})
+        return True
+
+    def close(self):
+        if self.owner_id:
+            Gio.bus_unown_name(self.owner_id)
+            self.owner_id = 0
+        if self.connection:
+            for registration_id in self.registration_ids:
+                try:
+                    self.connection.unregister_object(registration_id)
+                except Exception:
+                    pass
+            self.registration_ids.clear()
+            self.connection = None
 
 
 # ==============================================================================
@@ -587,6 +987,12 @@ class LoopsWindow(Adw.ApplicationWindow):
         self.data_pages = {}
         self.notification_views = {}
         self.notifications_page = None
+        self.notification_poll_timer_id = None
+        self.notification_poll_in_flight = False
+        self.notification_snapshot_ready = False
+        self.notification_known_ids = set()
+        self.notification_known_order = []
+        self.notification_badge_count = 0
         self.conversation_by_row = {}
         self.progress_timer_id = None
         self.create_player = None
@@ -595,6 +1001,8 @@ class LoopsWindow(Adw.ApplicationWindow):
         self._build_header()
         self._build_main_layout()
         self._setup_keyboard_shortcuts()
+        self._setup_navigation_gestures()
+        self.mpris = MprisService(self)
 
         # Connect window close
         self.connect("close-request", self._on_close_request)
@@ -603,6 +1011,7 @@ class LoopsWindow(Adw.ApplicationWindow):
         self.progress_timer_id = GLib.timeout_add(250, self._on_progress_tick)
 
         if self.session and self.session.get("access_token"):
+            self._start_notification_polling()
             self.show_feed()
         else:
             self.show_login()
@@ -611,6 +1020,9 @@ class LoopsWindow(Adw.ApplicationWindow):
         if self.progress_timer_id:
             GLib.source_remove(self.progress_timer_id)
             self.progress_timer_id = None
+        self._stop_notification_polling()
+        if getattr(self, "mpris", None):
+            self.mpris.close()
         if hasattr(self, "player") and self.player:
             self.player.stop()
         if self.create_player:
@@ -742,8 +1154,23 @@ class LoopsWindow(Adw.ApplicationWindow):
 
         self.dock_buttons = {}
         for icon_name, tooltip, callback in items:
-            btn = Gtk.Button(icon_name=icon_name, tooltip_text=tooltip)
+            btn = Gtk.Button(tooltip_text=tooltip)
             btn.add_css_class("dock-btn")
+            if tooltip == "Notifications":
+                icon_overlay = Gtk.Overlay()
+                icon_overlay.set_child(Gtk.Image.new_from_icon_name(icon_name))
+                self.notification_badge_label = Gtk.Label()
+                self.notification_badge_label.add_css_class("notification-count-badge")
+                self.notification_badge_label.set_halign(Gtk.Align.END)
+                self.notification_badge_label.set_valign(Gtk.Align.START)
+                self.notification_badge_label.set_margin_top(1)
+                self.notification_badge_label.set_margin_end(1)
+                self.notification_badge_label.set_can_target(False)
+                self.notification_badge_label.set_visible(False)
+                icon_overlay.add_overlay(self.notification_badge_label)
+                btn.set_child(icon_overlay)
+            else:
+                btn.set_icon_name(icon_name)
             btn.connect("clicked", lambda _b, cb=callback: cb())
             self.left_dock.append(btn)
             self.dock_buttons[tooltip] = btn
@@ -756,6 +1183,181 @@ class LoopsWindow(Adw.ApplicationWindow):
                 btn.add_css_class("active")
             else:
                 btn.remove_css_class("active")
+
+    def _update_notification_badge(self, count):
+        self.notification_badge_count = max(0, int(count or 0))
+        label = getattr(self, "notification_badge_label", None)
+        if not label:
+            return
+        if self.notification_badge_count:
+            label.set_text("99+" if self.notification_badge_count > 99 else str(self.notification_badge_count))
+            label.set_visible(True)
+        else:
+            label.set_visible(False)
+
+    def _start_notification_polling(self):
+        if not self.session or not self.session.get("access_token"):
+            return
+        if self.notification_poll_timer_id is None:
+            self._poll_notifications()
+            # The Loops API exposes a badge-count endpoint but no desktop event
+            # stream, so poll often enough to feel immediate without a tight loop.
+            self.notification_poll_timer_id = GLib.timeout_add_seconds(
+                12, self._notification_poll_tick
+            )
+
+    def _stop_notification_polling(self):
+        if self.notification_poll_timer_id is not None:
+            GLib.source_remove(self.notification_poll_timer_id)
+            self.notification_poll_timer_id = None
+
+    def _notification_poll_tick(self):
+        if not self.session or not self.session.get("access_token"):
+            self.notification_poll_timer_id = None
+            return GLib.SOURCE_REMOVE
+        self._poll_notifications()
+        return GLib.SOURCE_CONTINUE
+
+    def _poll_notifications(self):
+        if self.notification_poll_in_flight or not self.session:
+            return
+        self.notification_poll_in_flight = True
+        session = dict(self.session)
+
+        def worker():
+            count = None
+            items = None
+            error = None
+            try:
+                count_payload = soup_json(
+                    "GET",
+                    f"https://{session['instance']}/api/v1/account/notifications/count",
+                    token=session["access_token"],
+                )
+                count_data = count_payload.get("data") if isinstance(count_payload, dict) else None
+                if not isinstance(count_data, dict) and isinstance(count_payload, dict):
+                    count_data = count_payload
+                count = int((count_data or {}).get("unread_count") or 0)
+
+                notification_payload = soup_json(
+                    "GET",
+                    f"https://{session['instance']}/api/v1/account/notifications",
+                    token=session["access_token"],
+                )
+                items, _cursor = payload_items_and_cursor(
+                    notification_payload,
+                    keys=("data", "notifications", "items"),
+                )
+            except Exception as fetch_error:
+                error = str(fetch_error)
+            GLib.idle_add(
+                self._notification_poll_done,
+                count,
+                items,
+                error,
+                session.get("access_token"),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _notification_poll_done(self, count, items, error, access_token):
+        self.notification_poll_in_flight = False
+        if not self.session or self.session.get("access_token") != access_token:
+            return GLib.SOURCE_REMOVE
+        if count is not None:
+            self._update_notification_badge(count)
+
+        if items is None:
+            if error:
+                print(f"Notification polling failed: {error}")
+            return GLib.SOURCE_REMOVE
+
+        items = [item for item in items if isinstance(item, dict)]
+        if not self.notification_snapshot_ready:
+            # Establish a baseline at launch so existing unread items do not
+            # trigger a burst of stale desktop alerts.
+            self.notification_known_order = [
+                str(item["id"]) for item in items if item.get("id") is not None
+            ]
+            self.notification_known_ids = set(self.notification_known_order)
+            self.notification_snapshot_ready = True
+            return GLib.SOURCE_REMOVE
+
+        new_items = [
+            item for item in items
+            if item.get("id") is not None
+            and str(item["id"]) not in self.notification_known_ids
+            and not item.get("read_at")
+        ]
+        for item in items:
+            if item.get("id") is None:
+                continue
+            notification_id = str(item["id"])
+            if notification_id not in self.notification_known_ids:
+                self.notification_known_ids.add(notification_id)
+                self.notification_known_order.append(notification_id)
+        while len(self.notification_known_order) > 500:
+            stale_id = self.notification_known_order.pop(0)
+            self.notification_known_ids.discard(stale_id)
+
+        # Items are returned newest-first by the account notification endpoint.
+        for item in reversed(new_items):
+            self._show_desktop_notification(item)
+        return GLib.SOURCE_REMOVE
+
+    def _show_desktop_notification(self, item):
+        notification_type = str(item.get("type") or "")
+        actor = item.get("actor") or item.get("account") or item.get("user") or {}
+        if not isinstance(actor, dict):
+            actor = {}
+        actor_name = (
+            actor.get("display_name")
+            or actor.get("name")
+            or actor.get("username")
+            or "Alguém"
+        )
+        username = actor.get("username")
+        display_actor = f"@{username}" if username else actor_name
+
+        like_types = {"video.like", "comment.like", "commentReply.like"}
+        follower_types = {"new_follower"}
+        comment_types = {"video.comment", "video.commentReply", "commentReply"}
+        if notification_type in like_types:
+            title = "Nova curtida"
+            detail = "curtiu seu comentário." if notification_type != "video.like" else "curtiu seu vídeo."
+        elif notification_type in follower_types:
+            title = "Novo seguidor"
+            detail = "começou a seguir você."
+        elif notification_type in comment_types:
+            title = "Novo comentário"
+            detail = (
+                "respondeu ao seu comentário."
+                if notification_type == "video.commentReply"
+                else "comentou no seu vídeo."
+            )
+            comment_text = item.get("comment_text") or item.get("content") or item.get("comment")
+            if isinstance(comment_text, dict):
+                comment_text = (
+                    comment_text.get("content")
+                    or comment_text.get("text")
+                    or comment_text.get("caption")
+                )
+            if comment_text:
+                detail = str(comment_text).strip()
+        else:
+            return
+
+        if notification_type in comment_types and comment_text:
+            body = f"{display_actor}: {detail}"
+        else:
+            body = f"{display_actor} {detail}"
+        if len(body) > 240:
+            body = body[:237] + "…"
+        notification = Gio.Notification.new(title)
+        notification.set_body(body)
+        notification.set_default_action("app.open-notifications")
+        notification_id = str(item.get("id") or secrets.token_hex(8))
+        self.get_application().send_notification(f"loops-{notification_id}", notification)
 
     # --------------------------------------------------------------------------
     # Center Video Player Area (Zero Glitch)
@@ -1123,6 +1725,7 @@ class LoopsWindow(Adw.ApplicationWindow):
 
     def show_feed(self):
         self.main_stack.set_visible_child_name("workspace")
+        self._start_notification_polling()
         self._show_feed_page()
         self._load_feed()
 
@@ -1329,6 +1932,33 @@ class LoopsWindow(Adw.ApplicationWindow):
         theme_row.append(self.theme_choice)
         box.append(theme_row)
 
+        translation_title = Gtk.Label(label="Tradução local de comentários", xalign=0)
+        translation_title.add_css_class("heading")
+        box.append(translation_title)
+        translation_description = Gtk.Label(
+            label=(
+                "Detecta o idioma automaticamente e traduz somente quando você pedir. "
+                "O Argos Translate processa no aparelho; o modelo de cada par é baixado "
+                "uma vez e fica salvo para uso offline."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        translation_description.add_css_class("dim-label")
+        box.append(translation_description)
+
+        language_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        language_label = Gtk.Label(label="Traduzir para", xalign=0, hexpand=True)
+        self.translation_language_choice = Gtk.DropDown.new_from_strings(
+            [label for _code, label in TRANSLATION_LANGUAGES]
+        )
+        self.translation_language_choice.connect(
+            "notify::selected", self._save_translation_language
+        )
+        language_row.append(language_label)
+        language_row.append(self.translation_language_choice)
+        box.append(language_row)
+
         logout_btn = Gtk.Button(label="Sair desta conta")
         logout_btn.add_css_class("destructive-action")
         logout_btn.connect("clicked", self._logout)
@@ -1347,6 +1977,20 @@ class LoopsWindow(Adw.ApplicationWindow):
         theme = settings.get("theme", "system")
         idx = {"system": 0, "light": 1, "dark": 2}.get(theme, 0)
         self.theme_choice.set_selected(idx)
+        target_language = settings.get("translation_language", "pt")
+        language_idx = next(
+            (i for i, (code, _label) in enumerate(TRANSLATION_LANGUAGES) if code == target_language),
+            0,
+        )
+        self.translation_language_choice.set_selected(language_idx)
+
+    def _save_translation_language(self, *_args):
+        selected = self.translation_language_choice.get_selected()
+        if selected >= len(TRANSLATION_LANGUAGES):
+            return
+        pref = load_preferences()
+        pref["translation_language"] = TRANSLATION_LANGUAGES[selected][0]
+        save_preferences(pref)
 
     def _save_theme(self, *_args):
         selected = self.theme_choice.get_selected()
@@ -1360,6 +2004,102 @@ class LoopsWindow(Adw.ApplicationWindow):
             "light": Adw.ColorScheme.FORCE_LIGHT,
             "dark": Adw.ColorScheme.FORCE_DARK,
         }.get(theme, Adw.ColorScheme.DEFAULT))
+
+    def _setup_navigation_gestures(self):
+        """Use horizontal two-finger trackpad scrolls for page history."""
+        self._navigation_back_stack = []
+        self._navigation_forward_stack = []
+        self._navigation_suppress_history = False
+        self._navigation_scroll_delta = 0.0
+        self._navigation_gesture = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.BOTH_AXES
+            | Gtk.EventControllerScrollFlags.KINETIC
+        )
+        self._navigation_gesture.connect("scroll", self._on_navigation_scroll)
+        self._navigation_gesture.connect("scroll-end", self._on_navigation_scroll_end)
+        self._navigation_gesture.connect("decelerate", self._on_navigation_decelerate)
+        self._navigation_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.content_stack.add_controller(self._navigation_gesture)
+        self._navigation_current_page = self.content_stack.get_visible_child_name()
+        self.content_stack.connect("notify::visible-child-name", self._on_visible_page_changed)
+
+    def _on_visible_page_changed(self, stack, _property):
+        name = stack.get_visible_child_name()
+        previous = self._navigation_current_page
+        self._navigation_current_page = name
+        if self._navigation_suppress_history or not previous or not name or previous == name:
+            return
+        self._navigation_back_stack.append(previous)
+        if len(self._navigation_back_stack) > 80:
+            del self._navigation_back_stack[:-80]
+        self._navigation_forward_stack.clear()
+
+    def _on_navigation_scroll(self, _controller, dx, dy):
+        # Ignore vertical wheel/trackpad movement; feed videos keep their own
+        # vertical paging gesture. Horizontal streams stay unconsumed so nested
+        # horizontal carousels continue to scroll normally.
+        if abs(dx) <= max(0.01, abs(dy) * 1.15):
+            return False
+        self._navigation_scroll_delta += dx
+        return False
+
+    def _on_navigation_scroll_end(self, controller):
+        delta = self._navigation_scroll_delta
+        self._navigation_scroll_delta = 0.0
+        try:
+            unit = controller.get_unit()
+        except Exception:
+            unit = None
+        surface_unit = getattr(getattr(Gdk, "ScrollUnit", None), "SURFACE", None)
+        threshold = 55.0 if surface_unit is not None and unit == surface_unit else 1.25
+        if abs(delta) < threshold:
+            return
+        # In GTK scroll deltas describe content movement: a leftward delta is a
+        # rightward finger swipe, which is the conventional Back gesture.
+        self._navigate_history(-1 if delta < 0 else 1)
+
+    def _on_navigation_decelerate(self, _controller, _velocity_x, _velocity_y):
+        # Some touchpads emit deceleration instead of scroll-end at gesture end.
+        self._on_navigation_scroll_end(self._navigation_gesture)
+
+    def _navigate_history(self, direction):
+        source = self._navigation_back_stack if direction < 0 else self._navigation_forward_stack
+        destination = self._navigation_forward_stack if direction < 0 else self._navigation_back_stack
+        if not source:
+            return False
+        target = source.pop()
+        current = self.content_stack.get_visible_child_name()
+        if current and current != target:
+            destination.append(current)
+        self._navigation_suppress_history = True
+        try:
+            if target == "feed":
+                self._show_feed_page()
+            else:
+                self._show_page(target)
+            self._sync_dock_to_page(target)
+            self._navigation_current_page = target
+        finally:
+            self._navigation_suppress_history = False
+        return True
+
+    def _sync_dock_to_page(self, name):
+        if name == "feed":
+            dock_name = "Home"
+        elif name.startswith("profile_"):
+            dock_name = "Profile"
+        else:
+            dock_name = {
+                "explore_full": "Explore",
+                "search_view": "Search",
+                "following_suggestions": "Following",
+                "notifications": "Notifications",
+                "messages": "Messages",
+                "create": "Create",
+                "settings": "Settings",
+            }.get(name)
+        if dock_name:
+            self._set_active_dock_button(dock_name)
 
     def _show_page(self, name):
         if hasattr(self, "player") and self.player:
@@ -1589,6 +2329,8 @@ class LoopsWindow(Adw.ApplicationWindow):
             self.player.set_playing(False)
             self.play_overlay_btn.set_visible(False)
 
+        if getattr(self, "mpris", None):
+            self.mpris.set_track(item, url or "", author, caption)
         self._update_interaction_panel(item, author)
         self._load_comments(item)
 
@@ -1605,6 +2347,8 @@ class LoopsWindow(Adw.ApplicationWindow):
         pref["video_muted"] = muted
         save_preferences(pref)
         self.player.set_muted(muted)
+        if getattr(self, "mpris", None):
+            self.mpris.sync_volume()
         self.ctrl_volume_btn.set_icon_name(
             "audio-volume-muted-symbolic" if muted else "audio-volume-high-symbolic"
         )
@@ -1618,6 +2362,8 @@ class LoopsWindow(Adw.ApplicationWindow):
             self.progress_scale.set_value(pos)
             self.lbl_time_pos.set_text(self._format_seconds(pos))
             self.lbl_time_dur.set_text(self._format_seconds(dur))
+        if getattr(self, "mpris", None):
+            self.mpris.refresh()
         return True
 
     def _on_scale_change_value(self, _scale, _scroll, value):
@@ -1906,29 +2652,58 @@ class LoopsWindow(Adw.ApplicationWindow):
                 lbl_text.add_css_class("comment-text")
                 details_box.append(lbl_text)
 
-            # GIF/media attachment (klipy)
-            media_list = comment.get("media") or []
-            if media_list and isinstance(media_list, list):
-                m = media_list[0]
-                gif_item = m.get("item") or m.get("gif") or m
-                full = gif_item.get("full") or {}
-                preview = gif_item.get("preview") or {}
-                webm = gif_item.get("webm") or {}
-                mp4 = gif_item.get("mp4") or {}
-                gif_url = (
-                    full.get("url")
-                    or m.get("url")
-                    or preview.get("url")
-                    or ""
+                translation_button = Gtk.Button(label="Traduzir")
+                translation_button.add_css_class("flat")
+                translation_button.set_halign(Gtk.Align.START)
+                translation_button.set_tooltip_text("Traduzir este comentário localmente")
+                translation_result = Gtk.Label(xalign=0, wrap=True, selectable=True)
+                translation_result.add_css_class("dim-label")
+                translation_result.set_visible(False)
+                translation_state = {"result": None}
+                translation_button.connect(
+                    "clicked",
+                    lambda button, source=text, result=translation_result, state=translation_state:
+                    self._translate_comment_clicked(button, source, result, state),
                 )
-                video_url = webm.get("url") or mp4.get("url") or ""
-                if gif_url or video_url:
-                    gif_view = IMAGE_CACHE.make_animated_media(
-                        gif_url,
-                        width=140,
-                        height=140,
-                        fallback_video_url=video_url,
-                    )
+                details_box.append(translation_button)
+                details_box.append(translation_result)
+
+            # Loops can return media as a list, a single object, or nested under
+            # `item`/`gif`; normalize these forms before creating the preview.
+            media = (
+                comment.get("media")
+                or comment.get("media_attachments")
+                or comment.get("attachments")
+                or comment.get("gif")
+                or []
+            )
+            if isinstance(media, (dict, str)):
+                media = [media]
+            if isinstance(media, list):
+                for attachment in media:
+                    if not isinstance(attachment, dict):
+                        gif_url, video_url = self._comment_gif_urls(attachment)
+                        mime = "video/webm" if video_url.lower().split("?", 1)[0].endswith(".webm") else "video/mp4"
+                    elif attachment.get("provider") == "klipy" and attachment.get("url"):
+                        gif_url = attachment.get("url")
+                        video_url = gif_url if (attachment.get("mime") or "").lower().startswith("video/") else ""
+                        mime = attachment.get("mime") or "image/gif"
+                    else:
+                        gif_url, video_url = self._comment_gif_urls(attachment)
+                        mime = "video/webm" if video_url.lower().split("?", 1)[0].endswith(".webm") else "video/mp4"
+                    if not gif_url and not video_url:
+                        continue
+                    if video_url:
+                        gif_view = IMAGE_CACHE.make_autoplay_video(
+                            video_url, mime=mime, width=140, height=140
+                        )
+                    else:
+                        gif_view = IMAGE_CACHE.make_animated_media(
+                            gif_url,
+                            width=140,
+                            height=140,
+                            allow_video_fallback=False,
+                        )
                     gif_view.set_margin_top(4)
                     details_box.append(gif_view)
 
@@ -1951,6 +2726,104 @@ class LoopsWindow(Adw.ApplicationWindow):
             card.append(like_btn)
 
             self.comments_box.append(card)
+
+    def _translate_comment_clicked(self, button, original_text, result_label, state):
+        if state.get("result") is not None:
+            visible = not result_label.get_visible()
+            result_label.set_visible(visible)
+            button.set_label("Ocultar tradução" if visible else "Ver tradução")
+            return
+        if not button.get_sensitive():
+            return
+
+        target_code = load_preferences().get("translation_language", "pt")
+        button.set_sensitive(False)
+        button.set_label("Traduzindo localmente…")
+        result_label.set_text("Reconhecendo o idioma e preparando o modelo offline…")
+        result_label.set_visible(True)
+        threading.Thread(
+            target=self._translate_comment_worker,
+            args=(button, original_text, result_label, state, target_code),
+            daemon=True,
+        ).start()
+
+    def _translate_comment_worker(self, button, original_text, result_label, state, target_code):
+        try:
+            model_data = Path(GLib.get_user_data_dir()) / "loops" / "translation" / "argos"
+            translated, source_code = translate_comment_locally(
+                original_text, target_code, model_data
+            )
+            GLib.idle_add(
+                self._finish_comment_translation,
+                button,
+                result_label,
+                state,
+                translated,
+                source_code,
+                target_code,
+                None,
+            )
+        except Exception as error:
+            GLib.idle_add(
+                self._finish_comment_translation,
+                button,
+                result_label,
+                state,
+                None,
+                None,
+                target_code,
+                str(error),
+            )
+
+    def _finish_comment_translation(
+        self, button, result_label, state, translated, source_code, target_code, error
+    ):
+        button.set_sensitive(True)
+        if error:
+            result_label.set_text(error)
+            button.set_label("Tentar novamente")
+            return GLib.SOURCE_REMOVE
+
+        labels = dict(TRANSLATION_LANGUAGES)
+        source_name = labels.get(source_code, source_code)
+        target_name = labels.get(target_code, target_code)
+        if translated is None:
+            result_label.set_text(f"Este comentário já está em {target_name}.")
+        else:
+            result_label.set_text(f"{source_name} → {target_name}: {translated}")
+        state["result"] = result_label.get_text()
+        button.set_label("Ocultar tradução")
+        return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _comment_gif_urls(media):
+        """Extract playable and image URLs from Loops/Klipy comment media."""
+        video_urls = []
+        image_urls = []
+        seen = set()
+
+        def visit(value, key=""):
+            if isinstance(value, str):
+                url = value.strip()
+                if not url.startswith(("https://", "http://")) or url in seen:
+                    return
+                seen.add(url)
+                lowered_key = key.lower()
+                lowered_url = url.lower().split("?", 1)[0]
+                if any(tag in lowered_key for tag in ("webm", "mp4", "video")) or lowered_url.endswith((".webm", ".mp4", ".m4v")):
+                    video_urls.append(url)
+                else:
+                    image_urls.append(url)
+                return
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    visit(child, f"{key}.{child_key}" if key else str(child_key))
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child, key)
+
+        visit(media)
+        return (image_urls[0] if image_urls else "", video_urls[0] if video_urls else "")
 
     def _update_comment_like_button(self, button, liked, count):
         label_text = f"♥ {count}" if liked else (f"♡ {count}" if count > 0 else "♡")
@@ -3381,6 +4254,7 @@ class LoopsWindow(Adw.ApplicationWindow):
             return False
         item["read_at"] = "read"
         self._render_notifications(category, self.notification_views[category]["items"], None)
+        self._poll_notifications()
         return False
 
     def _mark_all_notifications_read(self, category):
@@ -3413,6 +4287,7 @@ class LoopsWindow(Adw.ApplicationWindow):
             for item in view["items"]:
                 item["read_at"] = item.get("read_at") or "read"
             self._render_notifications(category, view["items"], None)
+            self._poll_notifications()
         return False
 
     def _open_data_page(self, name, title, path):
@@ -3696,6 +4571,11 @@ class LoopsWindow(Adw.ApplicationWindow):
     # --------------------------------------------------------------------------
 
     def _logout(self, *_args):
+        self._stop_notification_polling()
+        self.notification_snapshot_ready = False
+        self.notification_known_ids.clear()
+        self.notification_known_order.clear()
+        self._update_notification_badge(0)
         try:
             config_path().unlink(missing_ok=True)
         except OSError:
@@ -3714,6 +4594,19 @@ class LoopsWindow(Adw.ApplicationWindow):
 class LoopsApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        open_notifications = Gio.SimpleAction.new("open-notifications", None)
+        open_notifications.connect("activate", self._open_notifications_action)
+        self.add_action(open_notifications)
+
+    def _open_notifications_action(self, *_args):
+        window = self.props.active_window
+        if window is None:
+            self.activate()
+            window = self.props.active_window
+        if window is not None:
+            window.present()
+            if window.session and window.session.get("access_token"):
+                window._open_notifications_page()
 
     def do_activate(self):
         load_custom_css()
